@@ -39,6 +39,12 @@ class LoginRequest(BaseModel):
     username: str
     password: str
 
+# අලුත් Location Update Model එක
+class LocationUpdate(BaseModel):
+    rep_id: int
+    latitude: float
+    longitude: float
+
 # Email sending function
 def send_email(to_email: str, otp: str):
     msg = EmailMessage()
@@ -70,26 +76,22 @@ def send_otp(req: OTPRequest, background_tasks: BackgroundTasks):
 # 2. Register Endpoint
 @app.post("/register")
 def register(req: RegisterRequest):
-    # Checking OTP validity
     if otp_storage.get(req.email) != req.otp:
         raise HTTPException(status_code=400, detail="Invalid or expired OTP!")
 
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
 
-    # Is username already taken checking
     cursor.execute("SELECT * FROM users WHERE username = %s", (req.username,))
     if cursor.fetchone():
         conn.close()
         raise HTTPException(status_code=400, detail="Username already exists! Please try another.")
 
-    # Is email already registered checking
     cursor.execute("SELECT * FROM users WHERE email = %s", (req.email,))
     if cursor.fetchone():
         conn.close()
         raise HTTPException(status_code=400, detail="Email is already registered!")
 
-    # Password hashing
     hashed_pw = bcrypt.hashpw(req.password.encode('utf-8'), bcrypt.gensalt())
 
     try:
@@ -98,7 +100,7 @@ def register(req: RegisterRequest):
             VALUES (%s, %s, %s, %s, %s, %s, %s)
         """, (req.first_name, req.last_name, req.email, req.username, hashed_pw.decode('utf-8'), req.mobile_number, req.whatsapp_number))
         conn.commit()
-        del otp_storage[req.email] # If registration is successful, remove the OTP from storage
+        del otp_storage[req.email]
         return {"message": "User registered successfully!"}
     except Exception as e:
         conn.rollback()
@@ -115,19 +117,36 @@ def login(req: LoginRequest):
     user = cursor.fetchone()
     conn.close()
 
-    # Cheking if user exists
     if not user:
         raise HTTPException(status_code=401, detail="Invalid username or password")
 
-    # Password verification
     if not bcrypt.checkpw(req.password.encode('utf-8'), user['password'].encode('utf-8')):
         raise HTTPException(status_code=401, detail="Invalid username or password")
 
     return {
         "message": "Login successful!", 
         "user": {
+            "id": user["id"],  # <--- ID එක අලුතින් යවනවා
             "first_name": user["first_name"], 
             "last_name": user["last_name"], 
             "username": user["username"]
         }
     }
+
+# 4. Location Update Endpoint (අලුත් API එක)
+@app.post("/update-location")
+def update_location(req: LocationUpdate):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("""
+            INSERT INTO rep_tracking (rep_id, latitude, longitude)
+            VALUES (%s, %s, %s)
+        """, (req.rep_id, req.latitude, req.longitude))
+        conn.commit()
+        return {"message": "Location updated successfully"}
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        conn.close()
