@@ -19,7 +19,5 @@ jobs:
           password: ${{ secrets.SERVER_PASSWORD }}
           script: |
             cd /var/www/reproute-backend
-            
             git pull origin main
-            
-            pm2 restart all
+            systemctl restart reproute-backend
