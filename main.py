@@ -45,6 +45,22 @@ class LocationUpdate(BaseModel):
     latitude: float
     longitude: float
 
+class TaskUpdate(BaseModel):
+    assignment_id: int
+    status: str
+    met_person: str
+    visit_notes: str
+
+class UnplannedVisit(BaseModel):
+    rep_id: int
+    name: str
+    contact: str
+    category: str
+    latitude: float
+    longitude: float
+    met_person: str
+    visit_notes: str
+
 def send_email(to_email: str, otp: str):
     msg = EmailMessage()
     msg.set_content(f"Welcome to Rep Route Pro!\n\nYour OTP for registration is: {otp}\n\nDo not share this code with anyone.")
@@ -171,6 +187,55 @@ def get_daily_tasks(rep_id: int):
         tasks = cursor.fetchall()
         return {"tasks": tasks}
     except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        conn.close()
+
+
+@app.post("/update-task")
+def update_task(req: TaskUpdate):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("""
+            UPDATE rep_assignments 
+            SET status = %s, met_person = %s, visit_notes = %s 
+            WHERE id = %s
+        """, (req.status, req.met_person, req.visit_notes, req.assignment_id))
+        conn.commit()
+        return {"message": "Task updated successfully"}
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        conn.close()
+
+
+@app.post("/add-unplanned-visit")
+def add_unplanned_visit(req: UnplannedVisit):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        # 1. මුලින්ම අලුත් කඩේ target_locations එකට සේව් කරනවා
+        cursor.execute("""
+            INSERT INTO target_locations (name, contact, latitude, longitude, category)
+            VALUES (%s, %s, %s, %s, %s)
+        """, (req.name, req.contact, req.latitude, req.longitude, req.category))
+        
+        # අලුතින් සේව් වුණ කඩේ ID එක ගන්නවා
+        new_location_id = cursor.lastrowid
+        
+        # 2. ඊටපස්සේ රෙප්ගේ රිපෝට් එක (met_person එක්කම) rep_assignments එකට දානවා
+        # (is_unassigned = 1 කියලා දාන්නේ Admin ට අලුත් ඒවා වෙන් කරලා අඳුරගන්න ලේසි වෙන්නයි)
+        cursor.execute("""
+            INSERT INTO rep_assignments (rep_id, location_id, assigned_date, status, met_person, visit_notes, is_unassigned)
+            VALUES (%s, %s, CURDATE(), 'Visited', %s, %s, 1)
+        """, (req.rep_id, new_location_id, req.met_person, req.visit_notes))
+        
+        conn.commit()
+        return {"message": "New location and visit added successfully!"}
+    except Exception as e:
+        conn.rollback()
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         conn.close()
