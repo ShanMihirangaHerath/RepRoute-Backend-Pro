@@ -1,6 +1,5 @@
 name: Auto Deploy to DigitalOcean Server
 
-# මේකෙන් කියන්නේ main බ්‍රාන්ච් එකට කෝඩ් එක Push කරපු ගමන් මේක වැඩ කරන්න පටන් ගන්න කියලා
 on:
   push:
     branches:
@@ -20,4 +19,4 @@ jobs:
           script: |
             cd /var/www/reproute-backend
             git pull origin main
-            systemctl restart reproute-backend
+            sudo systemctl restart reproute
