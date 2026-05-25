@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 import mysql.connector
 import smtplib
@@ -39,13 +39,13 @@ class LoginRequest(BaseModel):
     username: str
     password: str
 
-# අලුත් Location Update Model එක
+# Location Update Model
 class LocationUpdate(BaseModel):
     rep_id: int
     latitude: float
     longitude: float
 
-# Email sending function
+# Email sending function - අලුත් එක
 def send_email(to_email: str, otp: str):
     msg = EmailMessage()
     msg.set_content(f"Welcome to Rep Route Pro!\n\nYour OTP for registration is: {otp}\n\nDo not share this code with anyone.")
@@ -58,20 +58,36 @@ def send_email(to_email: str, otp: str):
         server.login(SENDER_EMAIL, APP_PASSWORD)
         server.send_message(msg)
         server.quit()
+        return True
     except Exception as e:
-        print(f"Failed to send email: {e}")
+        print(f"SMTP Error from DigitalOcean: {e}")
+        return False
 
 @app.get("/")
 def read_root():
     return {"message": "Rep Route API is Running Successfully!"}
 
-# 1. OTP Sender Endpoint
+# 1. OTP Sender Endpoint - අලුත් එක
 @app.post("/send-otp")
-def send_otp(req: OTPRequest, background_tasks: BackgroundTasks):
+def send_otp(req: OTPRequest):
     otp = str(random.randint(100000, 999999))
+    
+    # ටර්මිනල් එකේ පැහැදිලිව පේන්න මේක දැම්මා
+    print(f"\n=============================================")
+    print(f"🚨 DEBUG: OTP FOR {req.email} IS: {otp} 🚨")
+    print(f"=============================================\n")
+    
+    # ඊමේල් එක යවන්න ට්‍රයි කරනවා (Background නැතුව)
+    is_sent = send_email(req.email, otp)
+    
+    # ඊමේල් එක ගියත් නැතත් අපි OTP එක සේව් කරනවා Test කරන්න ලේසි වෙන්න
     otp_storage[req.email] = otp
-    background_tasks.add_task(send_email, req.email, otp) # email sending in background
-    return {"message": "OTP sent to email successfully!"}
+    
+    if is_sent:
+        return {"message": "OTP sent to email successfully!"}
+    else:
+        # DO එකෙන් බ්ලොක් වුණත් App එකට Success කියලා යවනවා OTP කොටුව Open වෙන්න
+        return {"message": "Email blocked by DO, but OTP saved in Server Terminal."}
 
 # 2. Register Endpoint
 @app.post("/register")
@@ -126,14 +142,14 @@ def login(req: LoginRequest):
     return {
         "message": "Login successful!", 
         "user": {
-            "id": user["id"],  # <--- ID එක අලුතින් යවනවා
+            "id": user["id"],  
             "first_name": user["first_name"], 
             "last_name": user["last_name"], 
             "username": user["username"]
         }
     }
 
-# 4. Location Update Endpoint (අලුත් API එක)
+# 4. Location Update Endpoint
 @app.post("/update-location")
 def update_location(req: LocationUpdate):
     conn = get_db_connection()
