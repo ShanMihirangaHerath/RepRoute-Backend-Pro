@@ -255,22 +255,45 @@ app.get('/api/map-data/:repId', async (req, res) => {
   }
 });
 
+// 1. Rep kenekge mulo visit history eka ganna API eka
 app.get('/api/reps/:id/history', async (req, res) => {
   try {
     const repId = req.params.id;
     const [history] = await pool.query(`
-      SELECT ra.id, tl.name AS location_name, tl.contact, tl.latitude, tl.longitude, 
-             ra.assigned_date, ra.status, ra.met_person, ra.visit_notes, ra.is_unassigned
+      SELECT ra.id as assignment_id, tl.name AS location_name, tl.latitude, tl.longitude, 
+             ra.assigned_date, ra.status as assignment_status, ra.is_unassigned,
+             vl.id as log_id, vl.met_person, vl.contact_number, vl.status as log_status, vl.notes, vl.created_at
       FROM rep_assignments ra
       JOIN target_locations tl ON ra.location_id = tl.id
+      LEFT JOIN visit_logs vl ON ra.id = vl.assignment_id
       WHERE ra.rep_id = ?
-      ORDER BY ra.assigned_date DESC
+      ORDER BY ra.assigned_date DESC, vl.created_at DESC
     `, [repId]);
-    res.status(200).json(history);
+
+    const groupedHistory = [];
+    const map = new Map();
+    
+    for (const row of history) {
+      if (!map.has(row.assignment_id)) {
+        map.set(row.assignment_id, {
+          id: row.assignment_id, location_name: row.location_name, latitude: row.latitude, longitude: row.longitude,
+          assigned_date: row.assigned_date, status: row.assignment_status, is_unassigned: row.is_unassigned, logs: []
+        });
+        groupedHistory.push(map.get(row.assignment_id));
+      }
+      if (row.log_id) {
+        map.get(row.assignment_id).logs.push({
+          id: row.log_id, met_person: row.met_person, contact_number: row.contact_number, status: row.log_status, notes: row.notes, created_at: row.created_at
+        });
+      }
+    }
+    res.status(200).json(groupedHistory);
   } catch (error) {
+    console.error('❌ Error fetching rep history:', error);
     res.status(500).json({ message: 'Error fetching representative history' });
   }
 });
+
 
 const PORT = 5000;
 app.listen(PORT, () => {

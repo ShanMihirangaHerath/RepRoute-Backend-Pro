@@ -5,26 +5,26 @@ import smtplib
 from email.message import EmailMessage
 import random
 import bcrypt
-from datetime import date
 
 app = FastAPI()
 
 SENDER_EMAIL = "familydoctorhealth@gmail.com"
 APP_PASSWORD = "lkqm npoz qtqd sqf"
-
 otp_storage = {}
 
-# Database Connection
+
 def get_db_connection():
     return mysql.connector.connect(
         host="localhost",
         user="rep_user",
         password="RepAdmin@123",
-        database="rep_management_db"
+        database="rep_management_db",
     )
+
 
 class OTPRequest(BaseModel):
     email: str
+
 
 class RegisterRequest(BaseModel):
     first_name: str
@@ -36,20 +36,25 @@ class RegisterRequest(BaseModel):
     whatsapp_number: str
     otp: str
 
+
 class LoginRequest(BaseModel):
     username: str
     password: str
+
 
 class LocationUpdate(BaseModel):
     rep_id: int
     latitude: float
     longitude: float
 
+
 class TaskUpdate(BaseModel):
     assignment_id: int
-    status: str
+    status: str  # Positive/Negative
     met_person: str
+    contact_number: str
     visit_notes: str
+
 
 class UnplannedVisit(BaseModel):
     rep_id: int
@@ -59,77 +64,65 @@ class UnplannedVisit(BaseModel):
     latitude: float
     longitude: float
     met_person: str
+    person_contact: str
+    status: str
     visit_notes: str
+
 
 def send_email(to_email: str, otp: str):
     msg = EmailMessage()
-    msg.set_content(f"Welcome to Rep Route Pro!\n\nYour OTP for registration is: {otp}\n\nDo not share this code with anyone.")
+    msg.set_content(f"Your OTP is: {otp}")
     msg["Subject"] = "Rep Route Pro - Verification OTP"
     msg["From"] = SENDER_EMAIL
     msg["To"] = to_email
-
     try:
-        server = smtplib.SMTP_SSL('smtp.gmail.com', 465)
+        server = smtplib.SMTP_SSL("smtp.gmail.com", 465)
         server.login(SENDER_EMAIL, APP_PASSWORD)
         server.send_message(msg)
         server.quit()
         return True
-    except Exception as e:
-        print(f"SMTP Error from DigitalOcean: {e}")
+    except:
         return False
 
-@app.get("/")
-def read_root():
-    return {"message": "Rep Route API is Running Successfully!"}
 
 @app.post("/send-otp")
 def send_otp(req: OTPRequest):
     otp = str(random.randint(100000, 999999))
-    print(f"\n=============================================")
     print(f"🚨 DEBUG: OTP FOR {req.email} IS: {otp} 🚨")
-    print(f"=============================================\n")
-    
     is_sent = send_email(req.email, otp)
     otp_storage[req.email] = otp
-    
-    if is_sent:
-        return {"message": "OTP sent to email successfully!"}
-    else:
-        return {"message": "Email blocked by DO, but OTP saved in Server Terminal."}
+    return {"message": "OTP processed."}
+
 
 @app.post("/register")
 def register(req: RegisterRequest):
     if otp_storage.get(req.email) != req.otp:
-        raise HTTPException(status_code=400, detail="Invalid or expired OTP!")
-
+        raise HTTPException(status_code=400, detail="Invalid OTP!")
     conn = get_db_connection()
-    cursor = conn.cursor(dictionary=True)
-
-    cursor.execute("SELECT * FROM users WHERE username = %s", (req.username,))
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT * FROM users WHERE username = %s OR email = %s",
+        (req.username, req.email),
+    )
     if cursor.fetchone():
-        conn.close()
-        raise HTTPException(status_code=400, detail="Username already exists!")
+        raise HTTPException(status_code=400, detail="User exists!")
+    hashed_pw = bcrypt.hashpw(req.password.encode("utf-8"), bcrypt.gensalt())
+    cursor.execute(
+        "INSERT INTO users (first_name, last_name, email, username, password, mobile_number, whatsapp_number) VALUES (%s, %s, %s, %s, %s, %s, %s)",
+        (
+            req.first_name,
+            req.last_name,
+            req.email,
+            req.username,
+            hashed_pw.decode("utf-8"),
+            req.mobile_number,
+            req.whatsapp_number,
+        ),
+    )
+    conn.commit()
+    conn.close()
+    return {"message": "Registered successfully!"}
 
-    cursor.execute("SELECT * FROM users WHERE email = %s", (req.email,))
-    if cursor.fetchone():
-        conn.close()
-        raise HTTPException(status_code=400, detail="Email is already registered!")
-
-    hashed_pw = bcrypt.hashpw(req.password.encode('utf-8'), bcrypt.gensalt())
-
-    try:
-        cursor.execute("""
-            INSERT INTO users (first_name, last_name, email, username, password, mobile_number, whatsapp_number)
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
-        """, (req.first_name, req.last_name, req.email, req.username, hashed_pw.decode('utf-8'), req.mobile_number, req.whatsapp_number))
-        conn.commit()
-        del otp_storage[req.email]
-        return {"message": "User registered successfully!"}
-    except Exception as e:
-        conn.rollback()
-        raise HTTPException(status_code=500, detail="Database error")
-    finally:
-        conn.close()
 
 @app.post("/login")
 def login(req: LoginRequest):
@@ -138,56 +131,57 @@ def login(req: LoginRequest):
     cursor.execute("SELECT * FROM users WHERE username = %s", (req.username,))
     user = cursor.fetchone()
     conn.close()
-
-    if not user or not bcrypt.checkpw(req.password.encode('utf-8'), user['password'].encode('utf-8')):
-        raise HTTPException(status_code=401, detail="Invalid username or password")
-
+    if not user or not bcrypt.checkpw(
+        req.password.encode("utf-8"), user["password"].encode("utf-8")
+    ):
+        raise HTTPException(status_code=401, detail="Invalid credentials")
     return {
-        "message": "Login successful!", 
+        "message": "Login successful!",
         "user": {
-            "id": user["id"],  
-            "first_name": user["first_name"], 
-            "last_name": user["last_name"], 
-            "username": user["username"]
-        }
+            "id": user["id"],
+            "first_name": user["first_name"],
+            "last_name": user["last_name"],
+            "username": user["username"],
+        },
     }
+
 
 @app.post("/update-location")
 def update_location(req: LocationUpdate):
     conn = get_db_connection()
     cursor = conn.cursor()
-    try:
-        cursor.execute("""
-            INSERT INTO rep_tracking (rep_id, latitude, longitude)
-            VALUES (%s, %s, %s)
-        """, (req.rep_id, req.latitude, req.longitude))
-        conn.commit()
-        return {"message": "Location updated successfully"}
-    except Exception as e:
-        conn.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        conn.close()
+    cursor.execute(
+        "INSERT INTO rep_tracking (rep_id, latitude, longitude) VALUES (%s, %s, %s)",
+        (req.rep_id, req.latitude, req.longitude),
+    )
+    conn.commit()
+    conn.close()
+    return {"message": "Location updated"}
 
-# 🚀 අලුතින් එකතු කරපු "Tasks" API එක 
+
+# --- 🚀 අලුත්/අප්ඩේට් කරපු API ටික ---
 @app.get("/tasks/{rep_id}")
 def get_daily_tasks(rep_id: int):
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
     try:
-        # අද දවසට අදාළව මේ Rep ට දීලා තියෙන Target Locations ටික ගන්නවා
         query = """
-            SELECT ra.id as assignment_id, ra.status, tl.id as location_id, 
-                   tl.name as store_name, tl.contact, tl.latitude, tl.longitude 
-            FROM rep_assignments ra 
-            JOIN target_locations tl ON ra.location_id = tl.id 
+            SELECT ra.id as assignment_id, ra.status as assignment_status, tl.id as location_id, 
+                   tl.name as store_name, tl.contact, tl.latitude, tl.longitude
+            FROM rep_assignments ra JOIN target_locations tl ON ra.location_id = tl.id 
             WHERE ra.rep_id = %s AND ra.assigned_date = CURDATE()
         """
         cursor.execute(query, (rep_id,))
         tasks = cursor.fetchall()
+
+        # එක් එක් කඩේට අදාළව හම්බවුණු 'ඔක්කොම මිනිස්සු' (Logs) ලිස්ට් එක ගන්නවා
+        for task in tasks:
+            cursor.execute(
+                "SELECT met_person, contact_number, status, notes, created_at FROM visit_logs WHERE assignment_id = %s ORDER BY created_at DESC",
+                (task["assignment_id"],),
+            )
+            task["logs"] = cursor.fetchall()
         return {"tasks": tasks}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
     finally:
         conn.close()
 
@@ -197,16 +191,22 @@ def update_task(req: TaskUpdate):
     conn = get_db_connection()
     cursor = conn.cursor()
     try:
-        cursor.execute("""
-            UPDATE rep_assignments 
-            SET status = %s, met_person = %s, visit_notes = %s 
-            WHERE id = %s
-        """, (req.status, req.met_person, req.visit_notes, req.assignment_id))
+        cursor.execute(
+            "UPDATE rep_assignments SET status = 'Visited' WHERE id = %s",
+            (req.assignment_id,),
+        )
+        cursor.execute(
+            "INSERT INTO visit_logs (assignment_id, met_person, contact_number, status, notes) VALUES (%s, %s, %s, %s, %s)",
+            (
+                req.assignment_id,
+                req.met_person,
+                req.contact_number,
+                req.status,
+                req.visit_notes,
+            ),
+        )
         conn.commit()
-        return {"message": "Task updated successfully"}
-    except Exception as e:
-        conn.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        return {"message": "Task updated"}
     finally:
         conn.close()
 
@@ -216,26 +216,29 @@ def add_unplanned_visit(req: UnplannedVisit):
     conn = get_db_connection()
     cursor = conn.cursor()
     try:
-        # 1. මුලින්ම අලුත් කඩේ target_locations එකට සේව් කරනවා
-        cursor.execute("""
-            INSERT INTO target_locations (name, contact, latitude, longitude, category)
-            VALUES (%s, %s, %s, %s, %s)
-        """, (req.name, req.contact, req.latitude, req.longitude, req.category))
-        
-        # අලුතින් සේව් වුණ කඩේ ID එක ගන්නවා
-        new_location_id = cursor.lastrowid
-        
-        # 2. ඊටපස්සේ රෙප්ගේ රිපෝට් එක (met_person එක්කම) rep_assignments එකට දානවා
-        # (is_unassigned = 1 කියලා දාන්නේ Admin ට අලුත් ඒවා වෙන් කරලා අඳුරගන්න ලේසි වෙන්නයි)
-        cursor.execute("""
-            INSERT INTO rep_assignments (rep_id, location_id, assigned_date, status, met_person, visit_notes, is_unassigned)
-            VALUES (%s, %s, CURDATE(), 'Visited', %s, %s, 1)
-        """, (req.rep_id, new_location_id, req.met_person, req.visit_notes))
-        
+        cursor.execute(
+            "INSERT INTO target_locations (name, contact, latitude, longitude, category) VALUES (%s, %s, %s, %s, %s)",
+            (req.name, req.contact, req.latitude, req.longitude, req.category),
+        )
+        new_loc_id = cursor.lastrowid
+
+        cursor.execute(
+            "INSERT INTO rep_assignments (rep_id, location_id, assigned_date, status, is_unassigned) VALUES (%s, %s, CURDATE(), 'Visited', 1)",
+            (req.rep_id, new_loc_id),
+        )
+        new_assign_id = cursor.lastrowid
+
+        cursor.execute(
+            "INSERT INTO visit_logs (assignment_id, met_person, contact_number, status, notes) VALUES (%s, %s, %s, %s, %s)",
+            (
+                new_assign_id,
+                req.met_person,
+                req.person_contact,
+                req.status,
+                req.visit_notes,
+            ),
+        )
         conn.commit()
-        return {"message": "New location and visit added successfully!"}
-    except Exception as e:
-        conn.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        return {"message": "Visit added!"}
     finally:
         conn.close()
