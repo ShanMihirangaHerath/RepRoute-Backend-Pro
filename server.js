@@ -6,10 +6,11 @@ const xlsx = require('xlsx');
 const mammoth = require('mammoth');
 const axios = require('axios');
 const mysql = require('mysql2/promise');
+const bcrypt = require('bcrypt'); // <--- Bcrypt add madiddini
 
 const app = express();
 app.use(cors());
-app.use(express.json()); // JSON දත්ත ගන්න (Confirm API එකට ඕනේ)
+app.use(express.json()); 
 
 const pool = mysql.createPool({
   host: '157.230.244.87',
@@ -39,10 +40,6 @@ function extractDataFromText(text) {
   return extracted;
 }
 
-// ---------------------------------------------------------
-// API 1: ෆයිල් එක කියවලා Google ලොකේෂන් හොයලා Preview එකට යවනවා 
-// (Database එකට සේව් කරන්නේ නැහැ)
-// ---------------------------------------------------------
 app.post('/api/preview-locations', upload.single('document'), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ message: 'No file uploaded' });
@@ -51,8 +48,7 @@ app.post('/api/preview-locations', upload.single('document'), async (req, res) =
     const originalName = req.file.originalname.toLowerCase();
     
     let locations = [];
-    console.log(`\n📂 Generating PREVIEW for: ${originalName}`);
-
+    
     if (originalName.endsWith('.xlsx') || originalName.endsWith('.xls') || originalName.endsWith('.csv')) {
       const workbook = xlsx.read(req.file.buffer, { type: 'buffer' });
       const sheetName = workbook.SheetNames[0];
@@ -92,19 +88,13 @@ app.post('/api/preview-locations', upload.single('document'), async (req, res) =
     }
 
     const uniqueLocations = processedLocations.filter((v, i, a) => a.findIndex(t => (t.Name === v.Name)) === i);
-    console.log(`✅ Preview ready with ${uniqueLocations.length} locations. Sending to Frontend...`);
-    
     res.status(200).json({ data: uniqueLocations });
 
   } catch (error) {
-    console.error('❌ Server Error:', error);
     res.status(500).json({ message: 'Error processing the document' });
   }
 });
 
-// ---------------------------------------------------------
-// API 2: Admin Confirm කරාට පස්සේ Database එකට සේව් කරනවා
-// ---------------------------------------------------------
 app.post('/api/confirm-locations', async (req, res) => {
   try {
     const { repId, locations } = req.body;
@@ -113,7 +103,6 @@ app.post('/api/confirm-locations', async (req, res) => {
       return res.status(400).json({ message: 'Invalid data provided for saving.' });
     }
 
-    console.log(`\n💾 SAVING locations and assigning to Rep ID: ${repId}...`);
     let savedCount = 0;
     const today = new Date().toISOString().split('T')[0];
 
@@ -146,84 +135,83 @@ app.post('/api/confirm-locations', async (req, res) => {
             savedCount++;
           }
         } catch (dbErr) {
-          console.error(`❌ DB Insert Error for ${loc.Name}:`, dbErr.message);
+          console.error(`DB Error:`, dbErr.message);
         }
       }
     }
-
-    console.log(`🎉 Successfully assigned ${savedCount} locations!`);
     res.status(200).json({ message: `Successfully saved and assigned ${savedCount} locations!` });
 
   } catch (error) {
-    console.error('❌ Save Error:', error);
     res.status(500).json({ message: 'Error saving locations to database.' });
   }
 });
 
 // ==========================================
-// REP MANAGEMENT APIs
+// REP MANAGEMENT APIs (With Bcrypt)
 // ==========================================
 
-// 1. ඔක්කොම Reps ලා අරන් එන්න (Get All Reps)
 app.get('/api/reps', async (req, res) => {
   try {
     const [reps] = await pool.query('SELECT id, first_name, last_name, email, username, mobile_number, whatsapp_number, nic_number, address, bank_account, created_at FROM users WHERE role = "rep" ORDER BY created_at DESC');
     res.status(200).json(reps);
   } catch (error) {
-    console.error('❌ Error fetching reps:', error);
     res.status(500).json({ message: 'Error fetching representatives' });
   }
 });
 
-// 2. අලුත් Rep කෙනෙක් දාන්න (Create New Rep)
 app.post('/api/reps', async (req, res) => {
   try {
     const { first_name, last_name, email, username, password, mobile_number, whatsapp_number, nic_number, address, bank_account } = req.body;
     
-    // Username එක හරි Email එක හරි කලින් තියෙනවද බලනවා
     const [existing] = await pool.query('SELECT id FROM users WHERE username = ? OR email = ?', [username, email]);
     if (existing.length > 0) return res.status(400).json({ message: 'Username or Email already exists!' });
 
+    // Password Encrypt maduvudu <---
+    const saltRounds = 10;
+    const hashedPassword = await bcrypt.hash(password, saltRounds);
+
     await pool.query(
       'INSERT INTO users (first_name, last_name, email, username, password, role, mobile_number, whatsapp_number, nic_number, address, bank_account) VALUES (?, ?, ?, ?, ?, "rep", ?, ?, ?, ?, ?)',
-      [first_name, last_name, email, username, password, mobile_number, whatsapp_number, nic_number, address, bank_account]
+      [first_name, last_name, email, username, hashedPassword, mobile_number, whatsapp_number, nic_number, address, bank_account]
     );
     res.status(201).json({ message: 'Rep created successfully!' });
   } catch (error) {
-    console.error('❌ Error creating rep:', error);
     res.status(500).json({ message: 'Error creating representative' });
   }
 });
 
-// 3. Rep ගේ විස්තර අප්ඩේට් කරන්න (Update Rep)
 app.put('/api/reps/:id', async (req, res) => {
   try {
     const repId = req.params.id;
-    const { first_name, last_name, email, username, mobile_number, whatsapp_number, nic_number, address, bank_account } = req.body;
+    const { first_name, last_name, email, username, password, mobile_number, whatsapp_number, nic_number, address, bank_account } = req.body;
     
-    await pool.query(
-      'UPDATE users SET first_name=?, last_name=?, email=?, username=?, mobile_number=?, whatsapp_number=?, nic_number=?, address=?, bank_account=? WHERE id=?',
-      [first_name, last_name, email, username, mobile_number, whatsapp_number, nic_number, address, bank_account, repId]
-    );
+    // Password update madidre encrypt maduvudu <---
+    if (password && password.trim() !== "") {
+      const saltRounds = 10;
+      const hashedPassword = await bcrypt.hash(password, saltRounds);
+      await pool.query(
+        'UPDATE users SET first_name=?, last_name=?, email=?, username=?, password=?, mobile_number=?, whatsapp_number=?, nic_number=?, address=?, bank_account=? WHERE id=?',
+        [first_name, last_name, email, username, hashedPassword, mobile_number, whatsapp_number, nic_number, address, bank_account, repId]
+      );
+    } else {
+      await pool.query(
+        'UPDATE users SET first_name=?, last_name=?, email=?, username=?, mobile_number=?, whatsapp_number=?, nic_number=?, address=?, bank_account=? WHERE id=?',
+        [first_name, last_name, email, username, mobile_number, whatsapp_number, nic_number, address, bank_account, repId]
+      );
+    }
+    
     res.status(200).json({ message: 'Rep updated successfully!' });
   } catch (error) {
-    console.error('❌ Error updating rep:', error);
     res.status(500).json({ message: 'Error updating representative' });
   }
 });
 
-// ==========================================
-// DASHBOARD & MAP APIs (REAL DATA)
-// ==========================================
-
-// 1. Dashboard එකේ ප්‍රස්ථාර සහ ගණන් කිරීම් සඳහා
 app.get('/api/dashboard-stats', async (req, res) => {
   try {
     const [reps] = await pool.query('SELECT COUNT(*) as count FROM users WHERE role="rep"');
     const [locations] = await pool.query('SELECT COUNT(*) as count FROM target_locations');
     const [assignments] = await pool.query('SELECT COUNT(*) as count FROM rep_assignments WHERE assigned_date = CURDATE()');
     
-    // දැනට ප්‍රස්ථාර වලට අපි දවස් 6ක බොරු ඩේටා දෙනවා, පස්සේ Tracking ආවම ඇත්ත දාමු
     const repActivityData = [
       { name: 'Mon', visited: 10 }, { name: 'Tue', visited: 25 },
       { name: 'Wed', visited: 30 }, { name: 'Thu', visited: 40 },
@@ -234,16 +222,14 @@ app.get('/api/dashboard-stats', async (req, res) => {
       activeReps: reps[0].count,
       totalLocations: locations[0].count,
       todaysVisits: assignments[0].count,
-      avgStopTime: '0m', // තාම App එකෙන් ඩේටා එන්නේ නැති නිසා
+      avgStopTime: '0m', 
       chartData: repActivityData
     });
   } catch (error) {
-    console.error('❌ Error fetching dashboard stats:', error);
     res.status(500).json({ message: 'Error fetching stats' });
   }
 });
 
-// 2. Map එක සඳහා (අදාළ Rep ගේ ටාගට් සහ Route එක)
 app.get('/api/map-data/:repId', async (req, res) => {
   try {
     const repId = req.params.id;
@@ -268,7 +254,7 @@ app.get('/api/map-data/:repId', async (req, res) => {
     res.status(500).json({ message: 'Error fetching map data' });
   }
 });
-// 1. Rep kenekge mulo visit history eka ganna API eka
+
 app.get('/api/reps/:id/history', async (req, res) => {
   try {
     const repId = req.params.id;
@@ -282,7 +268,6 @@ app.get('/api/reps/:id/history', async (req, res) => {
     `, [repId]);
     res.status(200).json(history);
   } catch (error) {
-    console.error('❌ Error fetching rep history:', error);
     res.status(500).json({ message: 'Error fetching representative history' });
   }
 });
