@@ -85,6 +85,18 @@ class ActivitySync(BaseModel):
     distance_km: float
     calories: float
 
+
+class LeaveRequest(BaseModel):
+    rep_id: int
+    leave_date: str
+    reason: str
+
+class ExpenseClaim(BaseModel):
+    rep_id: int
+    expense_date: str
+    amount: float
+    description: str
+
 def send_email(to_email: str, otp: str):
     msg = EmailMessage()
     msg.set_content(f"Your OTP is: {otp}")
@@ -431,5 +443,79 @@ def get_activity_history(rep_id: int, date: str):
         cursor.execute("SELECT steps, distance_km, calories FROM activity_history WHERE rep_id = %s AND record_date = %s", (rep_id, date))
         data = cursor.fetchone()
         return data if data else {"steps": 0, "distance_km": 0.0, "calories": 0.0}
+    finally:
+        conn.close()
+
+# ==========================================
+# 🚀 LEAVE MANAGEMENT & EXPENSES APIs
+# ==========================================
+
+# 1. නිවාඩු ඉල්ලුම් කිරීම
+@app.post("/request-leave")
+def request_leave(req: LeaveRequest):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("""
+            INSERT INTO leave_requests (rep_id, leave_date, reason, status)
+            VALUES (%s, %s, %s, 'Pending')
+        """, (req.rep_id, req.leave_date, req.reason))
+        conn.commit()
+        return {"message": "Leave request submitted successfully!"}
+    finally:
+        conn.close()
+
+# 2. තමන්ගේ නිවාඩු History එක බැලීම
+@app.get("/my-leaves/{rep_id}")
+def get_my_leaves(rep_id: int):
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        cursor.execute("""
+            SELECT id, leave_date, reason, status, created_at 
+            FROM leave_requests 
+            WHERE rep_id = %s 
+            ORDER BY created_at DESC
+        """, (rep_id,))
+        leaves = cursor.fetchall()
+        for leave in leaves:
+            leave['leave_date'] = str(leave['leave_date'])
+            leave['created_at'] = str(leave['created_at'])
+        return leaves
+    finally:
+        conn.close()
+
+# 3. වියදම් බිල්පත් දැමීම (Expense Claim)
+@app.post("/submit-expense")
+def submit_expense(req: ExpenseClaim):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("""
+            INSERT INTO expenses (rep_id, expense_date, amount, description, status)
+            VALUES (%s, %s, %s, %s, 'Pending')
+        """, (req.rep_id, req.expense_date, req.amount, req.description))
+        conn.commit()
+        return {"message": "Expense claim submitted successfully!"}
+    finally:
+        conn.close()
+
+# 4. තමන්ගේ වියදම් History එක බැලීම
+@app.get("/my-expenses/{rep_id}")
+def get_my_expenses(rep_id: int):
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        cursor.execute("""
+            SELECT id, expense_date, amount, description, status, created_at 
+            FROM expenses 
+            WHERE rep_id = %s 
+            ORDER BY created_at DESC
+        """, (rep_id,))
+        expenses = cursor.fetchall()
+        for exp in expenses:
+            exp['expense_date'] = str(exp['expense_date'])
+            exp['created_at'] = str(exp['created_at'])
+        return expenses
     finally:
         conn.close()
