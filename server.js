@@ -6,7 +6,7 @@ const xlsx = require('xlsx');
 const mammoth = require('mammoth');
 const axios = require('axios');
 const mysql = require('mysql2/promise');
-const bcrypt = require('bcrypt'); // <--- Bcrypt add madiddini
+const bcrypt = require('bcrypt');
 
 const app = express();
 app.use(cors());
@@ -146,10 +146,6 @@ app.post('/api/confirm-locations', async (req, res) => {
   }
 });
 
-// ==========================================
-// REP MANAGEMENT APIs (With Bcrypt)
-// ==========================================
-
 app.get('/api/reps', async (req, res) => {
   try {
     const [reps] = await pool.query('SELECT id, first_name, last_name, email, username, mobile_number, whatsapp_number, nic_number, address, bank_account, created_at FROM users WHERE role = "rep" ORDER BY created_at DESC');
@@ -166,7 +162,6 @@ app.post('/api/reps', async (req, res) => {
     const [existing] = await pool.query('SELECT id FROM users WHERE username = ? OR email = ?', [username, email]);
     if (existing.length > 0) return res.status(400).json({ message: 'Username or Email already exists!' });
 
-    // Password Encrypt maduvudu <---
     const saltRounds = 10;
     const hashedPassword = await bcrypt.hash(password, saltRounds);
 
@@ -185,7 +180,6 @@ app.put('/api/reps/:id', async (req, res) => {
     const repId = req.params.id;
     const { first_name, last_name, email, username, password, mobile_number, whatsapp_number, nic_number, address, bank_account } = req.body;
     
-    // Password update madidre encrypt maduvudu <---
     if (password && password.trim() !== "") {
       const saltRounds = 10;
       const hashedPassword = await bcrypt.hash(password, saltRounds);
@@ -255,14 +249,14 @@ app.get('/api/map-data/:repId', async (req, res) => {
   }
 });
 
-// 1. Rep kenekge mulo visit history eka ganna API eka
 app.get('/api/reps/:id/history', async (req, res) => {
   try {
     const repId = req.params.id;
     const [history] = await pool.query(`
       SELECT ra.id as assignment_id, tl.name AS location_name, tl.latitude, tl.longitude, 
              ra.assigned_date, ra.status as assignment_status, ra.is_unassigned,
-             vl.id as log_id, vl.met_person, vl.contact_number, vl.status as log_status, vl.notes, vl.created_at
+             vl.id as log_id, vl.met_person, vl.contact_number, vl.status as log_status, vl.notes, vl.created_at,
+             vl.latitude as log_lat, vl.longitude as log_lng
       FROM rep_assignments ra
       JOIN target_locations tl ON ra.location_id = tl.id
       LEFT JOIN visit_logs vl ON ra.id = vl.assignment_id
@@ -283,17 +277,66 @@ app.get('/api/reps/:id/history', async (req, res) => {
       }
       if (row.log_id) {
         map.get(row.assignment_id).logs.push({
-          id: row.log_id, met_person: row.met_person, contact_number: row.contact_number, status: row.log_status, notes: row.notes, created_at: row.created_at
+          id: row.log_id, met_person: row.met_person, contact_number: row.contact_number, status: row.log_status, notes: row.notes, 
+          created_at: row.created_at, log_lat: row.log_lat, log_lng: row.log_lng
         });
       }
     }
     res.status(200).json(groupedHistory);
   } catch (error) {
-    console.error('❌ Error fetching rep history:', error);
     res.status(500).json({ message: 'Error fetching representative history' });
   }
 });
 
+// ==========================================
+// NEW: APPROVALS APIs (Leaves, Expenses, Salary)
+// ==========================================
+
+app.get('/api/admin/leaves', async (req, res) => {
+  try {
+    const [leaves] = await pool.query(`SELECT l.*, u.first_name, u.last_name FROM leave_requests l JOIN users u ON l.rep_id = u.id ORDER BY l.created_at DESC`);
+    res.json(leaves);
+  } catch(e) { res.status(500).json({message: 'Error fetching leaves'}); }
+});
+
+app.put('/api/admin/leaves/:id', async (req, res) => {
+  try {
+    await pool.query('UPDATE leave_requests SET status = ? WHERE id = ?', [req.body.status, req.params.id]);
+    res.json({message: 'Leave updated successfully'});
+  } catch(e) { res.status(500).json({message: 'Error updating leave'}); }
+});
+
+app.get('/api/admin/expenses', async (req, res) => {
+  try {
+    const [expenses] = await pool.query(`SELECT e.*, u.first_name, u.last_name FROM expenses e JOIN users u ON e.rep_id = u.id ORDER BY e.created_at DESC`);
+    res.json(expenses);
+  } catch(e) { res.status(500).json({message: 'Error fetching expenses'}); }
+});
+
+app.put('/api/admin/expenses/:id', async (req, res) => {
+  try {
+    await pool.query('UPDATE expenses SET status = ? WHERE id = ?', [req.body.status, req.params.id]);
+    res.json({message: 'Expense updated successfully'});
+  } catch(e) { res.status(500).json({message: 'Error updating expense'}); }
+});
+
+app.get('/api/admin/salaries', async (req, res) => {
+  try {
+    const [salaries] = await pool.query(`SELECT s.*, u.first_name, u.last_name, u.bank_account FROM salary_requests s JOIN users u ON s.rep_id = u.id ORDER BY s.requested_at DESC`);
+    res.json(salaries);
+  } catch(e) { res.status(500).json({message: 'Error fetching salaries'}); }
+});
+
+app.put('/api/admin/salaries/:id', async (req, res) => {
+  try {
+    if(req.body.status === 'Paid') {
+      await pool.query('UPDATE salary_requests SET status = ?, paid_at = CURRENT_TIMESTAMP WHERE id = ?', [req.body.status, req.params.id]);
+    } else {
+      await pool.query('UPDATE salary_requests SET status = ? WHERE id = ?', [req.body.status, req.params.id]);
+    }
+    res.json({message: 'Salary status updated'});
+  } catch(e) { res.status(500).json({message: 'Error updating salary'}); }
+});
 
 const PORT = 5000;
 app.listen(PORT, () => {
