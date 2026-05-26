@@ -338,3 +338,67 @@ def submit_report(req: ReportSubmit):
         return {"message": "Report submitted to Admin!"}
     finally:
         conn.close()
+
+@app.get("/profile-data/{rep_id}")
+def get_profile_data(rep_id: int):
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        # User විස්තර
+        cursor.execute("SELECT first_name, last_name, email, mobile_number, bank_account FROM users WHERE id = %s", (rep_id,))
+        user = cursor.fetchone()
+
+        # අද දවසේ Task Stats
+        cursor.execute("""
+            SELECT 
+                COUNT(id) as total_assigned,
+                SUM(CASE WHEN status = 'Visited' THEN 1 ELSE 0 END) as completed,
+                SUM(CASE WHEN status = 'Pending' THEN 1 ELSE 0 END) as pending
+            FROM rep_assignments 
+            WHERE rep_id = %s AND assigned_date = CURDATE()
+        """, (rep_id,))
+        stats = cursor.fetchone()
+
+        # අද ගියපු කඩවල් වල සම්පූර්ණ විස්තර (PDF එකට සහ ලිස්ට් එකට)
+        cursor.execute("""
+            SELECT tl.name as store_name, vl.met_person, vl.contact_number, vl.status, vl.notes, vl.created_at
+            FROM visit_logs vl
+            JOIN rep_assignments ra ON vl.assignment_id = ra.id
+            JOIN target_locations tl ON ra.location_id = tl.id
+            WHERE ra.rep_id = %s AND ra.assigned_date = CURDATE()
+            ORDER BY vl.created_at DESC
+        """, (rep_id,))
+        logs = cursor.fetchall()
+        
+        positive_count = sum(1 for log in logs if log['status'] == 'Positive')
+        revisit_count = sum(1 for log in logs if log['status'] != 'Positive')
+
+        # Report sent status & Salary
+        cursor.execute("SELECT id FROM daily_reports WHERE rep_id = %s AND report_date = CURDATE()", (rep_id,))
+        is_report_sent = cursor.fetchone() is not None
+
+        cursor.execute("SELECT amount, status, requested_at, paid_at FROM salary_requests WHERE rep_id = %s ORDER BY requested_at DESC LIMIT 1", (rep_id,))
+        salary = cursor.fetchone()
+
+        # Messages
+        cursor.execute("SELECT sender, message, created_at FROM messages WHERE rep_id = %s ORDER BY created_at DESC LIMIT 5", (rep_id,))
+        messages = cursor.fetchall()
+
+        for log in logs: log['created_at'] = str(log['created_at'])
+
+        return {
+            "user": user,
+            "stats": {
+                "total_assigned": stats['total_assigned'] or 0,
+                "completed": stats['completed'] or 0,
+                "pending": stats['pending'] or 0,
+                "positive": positive_count,
+                "revisit": revisit_count
+            },
+            "visited_details": logs,
+            "is_report_sent": is_report_sent,
+            "salary": salary,
+            "messages": messages
+        }
+    finally:
+        conn.close()
