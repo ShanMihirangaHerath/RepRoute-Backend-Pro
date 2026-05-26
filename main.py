@@ -170,31 +170,38 @@ def update_location(req: LocationUpdate):
 
 
 # --- 🚀 අලුත්/අප්ඩේට් කරපු API ටික ---
+# (අනිත් ටික වෙනස් කරන්න එපා, මේ API එක විතරක් මාරු කරන්න)
 @app.get("/tasks/{rep_id}")
 def get_daily_tasks(rep_id: int):
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
     try:
+        # CURDATE() අයින් කරලා, රෙප්ට අසයින් කරපු ඔක්කොම ටික අලුත්ම එකේ ඉඳන් පල්ලෙහාට ගත්තා
         query = """
-            SELECT ra.id as assignment_id, ra.status as assignment_status, tl.id as location_id, 
-                   tl.name as store_name, tl.contact, tl.latitude, tl.longitude
-            FROM rep_assignments ra JOIN target_locations tl ON ra.location_id = tl.id 
-            WHERE ra.rep_id = %s AND ra.assigned_date = CURDATE()
+            SELECT ra.id as assignment_id, ra.status as assignment_status, ra.assigned_date, 
+                   tl.id as location_id, tl.name as store_name, tl.contact, tl.latitude, tl.longitude
+            FROM rep_assignments ra 
+            JOIN target_locations tl ON ra.location_id = tl.id 
+            WHERE ra.rep_id = %s
+            ORDER BY ra.assigned_date DESC
         """
         cursor.execute(query, (rep_id,))
         tasks = cursor.fetchall()
-
-        # එක් එක් කඩේට අදාළව හම්බවුණු 'ඔක්කොම මිනිස්සු' (Logs) ලිස්ට් එක ගන්නවා
+        
         for task in tasks:
-            cursor.execute(
-                "SELECT met_person, contact_number, status, notes, created_at FROM visit_logs WHERE assignment_id = %s ORDER BY created_at DESC",
-                (task["assignment_id"],),
-            )
-            task["logs"] = cursor.fetchall()
+            # දිනය string එකක් කරනවා ඇප් එකට යවන්න ලේසි වෙන්න
+            task['assigned_date'] = str(task['assigned_date']) 
+            
+            cursor.execute("SELECT met_person, contact_number, status, notes, created_at FROM visit_logs WHERE assignment_id = %s ORDER BY created_at DESC", (task['assignment_id'],))
+            logs = cursor.fetchall()
+            
+            for log in logs:
+                log['created_at'] = str(log['created_at']) # ගියපු වෙලාවත් string කරනවා
+                
+            task['logs'] = logs
         return {"tasks": tasks}
     finally:
         conn.close()
-
 
 @app.post("/update-task")
 def update_task(req: TaskUpdate):
