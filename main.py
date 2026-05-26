@@ -79,6 +79,12 @@ class SalaryReq(BaseModel):
 class ReportSubmit(BaseModel):
     rep_id: int
 
+class ActivitySync(BaseModel):
+    rep_id: int
+    steps: int
+    distance_km: float
+    calories: float
+
 def send_email(to_email: str, otp: str):
     msg = EmailMessage()
     msg.set_content(f"Your OTP is: {otp}")
@@ -344,22 +350,20 @@ def get_profile_data(rep_id: int):
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
     try:
-        # User විස්තර
         cursor.execute("SELECT first_name, last_name, email, mobile_number, bank_account FROM users WHERE id = %s", (rep_id,))
         user = cursor.fetchone()
 
-        # අද දවසේ Task Stats
+        # 🚀 Null වෙනුවට 0 එන්න COALESCE පාවිච්චි කරලා තියෙනවා
         cursor.execute("""
             SELECT 
                 COUNT(id) as total_assigned,
-                SUM(CASE WHEN status = 'Visited' THEN 1 ELSE 0 END) as completed,
-                SUM(CASE WHEN status = 'Pending' THEN 1 ELSE 0 END) as pending
+                COALESCE(SUM(CASE WHEN status = 'Visited' THEN 1 ELSE 0 END), 0) as completed,
+                COALESCE(SUM(CASE WHEN status = 'Pending' THEN 1 ELSE 0 END), 0) as pending
             FROM rep_assignments 
             WHERE rep_id = %s AND assigned_date = CURDATE()
         """, (rep_id,))
         stats = cursor.fetchone()
 
-        # අද ගියපු කඩවල් වල සම්පූර්ණ විස්තර (PDF එකට සහ ලිස්ට් එකට)
         cursor.execute("""
             SELECT tl.name as store_name, vl.met_person, vl.contact_number, vl.status, vl.notes, vl.created_at
             FROM visit_logs vl
@@ -373,14 +377,12 @@ def get_profile_data(rep_id: int):
         positive_count = sum(1 for log in logs if log['status'] == 'Positive')
         revisit_count = sum(1 for log in logs if log['status'] != 'Positive')
 
-        # Report sent status & Salary
         cursor.execute("SELECT id FROM daily_reports WHERE rep_id = %s AND report_date = CURDATE()", (rep_id,))
         is_report_sent = cursor.fetchone() is not None
 
         cursor.execute("SELECT amount, status, requested_at, paid_at FROM salary_requests WHERE rep_id = %s ORDER BY requested_at DESC LIMIT 1", (rep_id,))
         salary = cursor.fetchone()
 
-        # Messages
         cursor.execute("SELECT sender, message, created_at FROM messages WHERE rep_id = %s ORDER BY created_at DESC LIMIT 5", (rep_id,))
         messages = cursor.fetchall()
 
@@ -400,5 +402,34 @@ def get_profile_data(rep_id: int):
             "salary": salary,
             "messages": messages
         }
+    finally:
+        conn.close()
+
+# --- 2. Activity Sync සහ History වලට අලුත් APIs (ෆයිල් එකේ අගටම දාන්න) ---
+@app.post("/sync-activity")
+def sync_activity(req: ActivitySync):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        # අද දවසේ රෙකෝඩ් එක අප්ඩේට් කරනවා
+        cursor.execute("""
+            INSERT INTO activity_history (rep_id, record_date, steps, distance_km, calories)
+            VALUES (%s, CURDATE(), %s, %s, %s)
+            ON DUPLICATE KEY UPDATE
+            steps = %s, distance_km = %s, calories = %s
+        """, (req.rep_id, req.steps, req.distance_km, req.calories, req.steps, req.distance_km, req.calories))
+        conn.commit()
+        return {"message": "Activity synced"}
+    finally:
+        conn.close()
+
+@app.get("/activity-history/{rep_id}")
+def get_activity_history(rep_id: int, date: str):
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        cursor.execute("SELECT steps, distance_km, calories FROM activity_history WHERE rep_id = %s AND record_date = %s", (rep_id, date))
+        data = cursor.fetchone()
+        return data if data else {"steps": 0, "distance_km": 0.0, "calories": 0.0}
     finally:
         conn.close()
