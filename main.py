@@ -69,6 +69,16 @@ class UnplannedVisit(BaseModel):
     visit_notes: str
 
 
+class BankUpdate(BaseModel):
+    rep_id: int
+    bank_account: str
+
+class SalaryReq(BaseModel):
+    rep_id: int
+
+class ReportSubmit(BaseModel):
+    rep_id: int
+
 def send_email(to_email: str, otp: str):
     msg = EmailMessage()
     msg.set_content(f"Your OTP is: {otp}")
@@ -240,5 +250,84 @@ def add_unplanned_visit(req: UnplannedVisit):
         )
         conn.commit()
         return {"message": "Visit added!"}
+    finally:
+        conn.close()
+
+
+# 1. Profile Data ගන්න API එක
+@app.get("/profile-data/{rep_id}")
+def get_profile_data(rep_id: int):
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        # User විස්තර
+        cursor.execute("SELECT first_name, last_name, email, mobile_number, bank_account FROM users WHERE id = %s", (rep_id,))
+        user = cursor.fetchone()
+
+        # අද දවසේ Completed Tasks ගාණ
+        cursor.execute("SELECT COUNT(*) as visited_count FROM rep_assignments WHERE rep_id = %s AND assigned_date = CURDATE() AND status = 'Visited'", (rep_id,))
+        completed_tasks = cursor.fetchone()['visited_count']
+
+        # අද රිපෝට් එක යවලාද බලනවා
+        cursor.execute("SELECT id FROM daily_reports WHERE rep_id = %s AND report_date = CURDATE()", (rep_id,))
+        is_report_sent = cursor.fetchone() is not None
+
+        # අන්තිම Salary Request එක
+        cursor.execute("SELECT amount, status, requested_at, paid_at FROM salary_requests WHERE rep_id = %s ORDER BY requested_at DESC LIMIT 1", (rep_id,))
+        salary = cursor.fetchone()
+
+        # අලුත්ම Messages
+        cursor.execute("SELECT sender, message, created_at FROM messages WHERE rep_id = %s ORDER BY created_at DESC LIMIT 5", (rep_id,))
+        messages = cursor.fetchall()
+
+        return {
+            "user": user,
+            "today_completed": completed_tasks,
+            "is_report_sent": is_report_sent,
+            "salary": salary,
+            "messages": messages
+        }
+    finally:
+        conn.close()
+
+# 2. Bank Account එක Update කරන API එක
+@app.post("/update-bank")
+def update_bank(req: BankUpdate):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("UPDATE users SET bank_account = %s WHERE id = %s", (req.bank_account, req.rep_id))
+        conn.commit()
+        return {"message": "Bank account updated!"}
+    finally:
+        conn.close()
+
+# 3. Salary Request කරන API එක
+@app.post("/request-salary")
+def request_salary(req: SalaryReq):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("INSERT INTO salary_requests (rep_id, status) VALUES (%s, 'Pending')", (req.rep_id,))
+        conn.commit()
+        return {"message": "Salary requested successfully!"}
+    finally:
+        conn.close()
+
+# 4. Daily Report එක Submit කරන API එක
+@app.post("/submit-report")
+def submit_report(req: ReportSubmit):
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        cursor.execute("SELECT COUNT(*) as visited_count FROM rep_assignments WHERE rep_id = %s AND assigned_date = CURDATE() AND status = 'Visited'", (req.rep_id,))
+        visited_count = cursor.fetchone()['visited_count']
+        
+        if visited_count == 0:
+            raise HTTPException(status_code=400, detail="No visited tasks to submit today.")
+
+        cursor.execute("INSERT INTO daily_reports (rep_id, report_date, total_visited) VALUES (%s, CURDATE(), %s)", (req.rep_id, visited_count))
+        conn.commit()
+        return {"message": "Report submitted to Admin!"}
     finally:
         conn.close()
