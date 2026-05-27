@@ -200,12 +200,9 @@ app.put('/api/reps/:id', async (req, res) => {
   }
 });
 
-// ==========================================
-// 🚀 DASHBOARD REAL STATS API (With Date Filter)
-// ==========================================
 app.get('/api/dashboard-stats', async (req, res) => {
   try {
-    const filterDate = req.query.date; // e.g. '2026-05-26'
+    const filterDate = req.query.date; 
     
     const [reps] = await pool.query('SELECT COUNT(*) as count FROM users WHERE role="rep"');
     const [locations] = await pool.query('SELECT COUNT(*) as count FROM target_locations');
@@ -213,10 +210,7 @@ app.get('/api/dashboard-stats', async (req, res) => {
     let assignments, completed, repStats;
 
     if (filterDate && filterDate !== 'all') {
-      // 📅 දවසක් තේරුවම ඒ දවසට විතරක් අදාල දේවල් ගන්නවා
       [assignments] = await pool.query('SELECT COUNT(*) as count FROM rep_assignments WHERE assigned_date = ?', [filterDate]);
-      
-      // ඒ දවසේ කරපු visits විතරක් ගන්නවා
       [completed] = await pool.query('SELECT COUNT(DISTINCT assignment_id) as count FROM visit_logs WHERE DATE(created_at) = ?', [filterDate]);
       
       [repStats] = await pool.query(`
@@ -227,7 +221,6 @@ app.get('/api/dashboard-stats', async (req, res) => {
         WHERE u.role = 'rep'
       `, [filterDate, filterDate]);
     } else {
-      // 🌍 All Time දුන්නම ඔක්කොම ගන්නවා
       [assignments] = await pool.query('SELECT COUNT(*) as count FROM rep_assignments');
       [completed] = await pool.query('SELECT COUNT(DISTINCT assignment_id) as count FROM visit_logs');
       
@@ -240,7 +233,6 @@ app.get('/api/dashboard-stats', async (req, res) => {
       `);
     }
 
-    // Chart එක අන්තිම දවස් 7
     let chartEndDate = filterDate && filterDate !== 'all' ? filterDate : new Date().toISOString().split('T')[0];
     const [chartData] = await pool.query(`
       SELECT DATE_FORMAT(assigned_date, '%a') as name, COUNT(*) as visited 
@@ -264,54 +256,76 @@ app.get('/api/dashboard-stats', async (req, res) => {
 });
 
 // ==========================================
-// 🚀 LIVE MAP & TRACKING API (With Date Filter)
+// 🚀 LIVE MAP & TRACKING API (FIXED ROUTE & LOCATIONS)
 // ==========================================
 app.get('/api/map-data/:repId', async (req, res) => {
   try {
     const repId = req.params.repId; 
     const filterDate = req.query.date;
+    const today = new Date().toISOString().split('T')[0];
 
-    // All Reps (ලංකාවේ ඔක්කොම)
     if (repId === 'all') {
       const [allTargets] = await pool.query('SELECT id, name, contact, latitude, longitude, category FROM target_locations WHERE latitude IS NOT NULL');
-      return res.status(200).json({ targets: allTargets, route: [] });
+      return res.status(200).json({ targets: allTargets, routes: [] });
     }
 
-    let dateCondition = "";
-    let queryParams = [repId];
-
-    if (filterDate && filterDate !== 'all') {
-      // කැලැන්ඩර් දවසට Assign කරපු ඒවා හරි, ඒ දවසේ Visit කරපු ඒවා හරි ගන්නවා
-      dateCondition = "AND (ra.assigned_date = ? OR EXISTS (SELECT 1 FROM visit_logs WHERE assignment_id = ra.id AND DATE(created_at) = ?))";
-      queryParams.push(filterDate, filterDate);
-    }
-
+    // 1. 📍 Locations (කඩවල්): දවසක් තේරුවත් නැතත් ඔක්කොම පෙන්වනවා
     const [targets] = await pool.query(`
       SELECT tl.id, tl.name, tl.contact, tl.latitude, tl.longitude, ra.status, ra.is_unassigned, DATE_FORMAT(ra.assigned_date, '%Y-%m-%d') as assigned_date,
              (SELECT status FROM visit_logs WHERE assignment_id = ra.id ORDER BY created_at DESC LIMIT 1) as latest_status
       FROM target_locations tl
       JOIN rep_assignments ra ON tl.id = ra.location_id
-      WHERE ra.rep_id = ? AND tl.latitude IS NOT NULL ${dateCondition}
-    `, queryParams);
+      WHERE ra.rep_id = ? AND tl.latitude IS NOT NULL
+    `, [repId]);
 
-    // ට්‍රැකින් පාර පෙන්වන්නේ තෝරපු දවසට විතරයි
-    let route = [];
+    // 2. 🟢 Route Data Grouping (දවස අනුව පාරවල් කඩලා ගන්නවා)
+    let routes = [];
+
     if (filterDate && filterDate !== 'all') {
+      // දවසක් තේරුවම ඒ දවසේ පාර විතරක් (කොළ පාටින් එයි)
       const [tracking] = await pool.query(`
         SELECT latitude, longitude FROM rep_tracking 
         WHERE rep_id = ? AND DATE(tracked_at) = ? ORDER BY tracked_at ASC
       `, [repId, filterDate]);
-      route = tracking.map(t => [Number(t.latitude), Number(t.longitude)]);
+      
+      if (tracking.length > 0) {
+        routes.push({
+          date: filterDate,
+          isToday: filterDate === today,
+          path: tracking.map(t => [Number(t.latitude), Number(t.longitude)])
+        });
+      }
+    } else {
+      // All Time දැම්මම ඔක්කොම දවස් වල පාරවල් ගන්නවා (Group by Date)
+      const [tracking] = await pool.query(`
+        SELECT latitude, longitude, DATE(tracked_at) as t_date FROM rep_tracking 
+        WHERE rep_id = ? ORDER BY tracked_at ASC
+      `, [repId]);
+
+      // දවස් අනුව පාරවල් Array එකකට දානවා
+      const groupedPaths = {};
+      tracking.forEach(t => {
+        if (!groupedPaths[t.t_date]) groupedPaths[t.t_date] = [];
+        groupedPaths[t.t_date].push([Number(t.latitude), Number(t.longitude)]);
+      });
+
+      for (const [dateKey, path] of Object.entries(groupedPaths)) {
+        routes.push({
+          date: dateKey,
+          isToday: dateKey === today, // අද දවස නම් true (කොළ පාට වෙන්න)
+          path: path
+        });
+      }
     }
 
-    res.status(200).json({ targets: targets, route: route });
+    res.status(200).json({ targets: targets, routes: routes });
   } catch (error) {
     console.error(error);
     res.status(500).json({ message: 'Error fetching map data' });
   }
 });
 
-// 🚀 Rep History API (Full Details & Date Filter)
+
 app.get('/api/reps/:id/history', async (req, res) => {
   try {
     const repId = req.params.id;
