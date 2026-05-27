@@ -200,35 +200,63 @@ app.put('/api/reps/:id', async (req, res) => {
   }
 });
 
+// ==========================================
+// 🚀 DASHBOARD REAL STATS API 
+// ==========================================
 app.get('/api/dashboard-stats', async (req, res) => {
   try {
     const [reps] = await pool.query('SELECT COUNT(*) as count FROM users WHERE role="rep"');
     const [locations] = await pool.query('SELECT COUNT(*) as count FROM target_locations');
     const [assignments] = await pool.query('SELECT COUNT(*) as count FROM rep_assignments WHERE assigned_date = CURDATE()');
+    const [completed] = await pool.query('SELECT COUNT(*) as count FROM rep_assignments WHERE assigned_date = CURDATE() AND status="Visited"');
     
-    const repActivityData = [
-      { name: 'Mon', visited: 10 }, { name: 'Tue', visited: 25 },
-      { name: 'Wed', visited: 30 }, { name: 'Thu', visited: 40 },
-      { name: 'Fri', visited: 20 }, { name: 'Sat', visited: 15 },
-    ];
+    // Reps ලාට Assign කරපු කඩවල් ගාණයි ගියපු ගාණයි (අද දවසට)
+    const [repStats] = await pool.query(`
+      SELECT u.id, u.first_name, u.last_name, 
+             COUNT(ra.id) as total_assigned,
+             SUM(CASE WHEN ra.status = 'Visited' THEN 1 ELSE 0 END) as completed
+      FROM users u
+      LEFT JOIN rep_assignments ra ON u.id = ra.rep_id AND ra.assigned_date = CURDATE()
+      WHERE u.role = 'rep'
+      GROUP BY u.id
+    `);
+
+    // අන්තිම දවස් 7 Chart එකට
+    const [chartData] = await pool.query(`
+      SELECT DATE_FORMAT(assigned_date, '%a') as name, COUNT(*) as visited 
+      FROM rep_assignments 
+      WHERE status = 'Visited' AND assigned_date >= DATE_SUB(CURDATE(), INTERVAL 7 DAY)
+      GROUP BY assigned_date ORDER BY assigned_date ASC
+    `);
 
     res.status(200).json({
       activeReps: reps[0].count,
       totalLocations: locations[0].count,
       todaysVisits: assignments[0].count,
-      avgStopTime: '0m', 
-      chartData: repActivityData
+      completedVisits: completed[0].count,
+      repStats: repStats,
+      chartData: chartData.length > 0 ? chartData : [{ name: 'No Data', visited: 0 }]
     });
   } catch (error) {
     res.status(500).json({ message: 'Error fetching stats' });
   }
 });
 
+// ==========================================
+// 🚀 LIVE MAP & TRACKING API (FIXED)
+// ==========================================
 app.get('/api/map-data/:repId', async (req, res) => {
   try {
-    const repId = req.params.id;
+    const repId = req.params.repId; // 👈 මේක කලින් id කියලා තිබිලා තමයි අවුල් ගියේ
     const today = new Date().toISOString().split('T')[0];
 
+    // All Reps තේරුවොත් ලංකාවේ තියෙන ඔක්කොම කඩවල් යවනවා
+    if (repId === 'all') {
+      const [allTargets] = await pool.query('SELECT id, name, contact, latitude, longitude, category FROM target_locations WHERE latitude IS NOT NULL');
+      return res.status(200).json({ targets: allTargets, route: [] });
+    }
+
+    // නැත්නම් තෝරපු Rep ගේ විතරක් යවනවා
     const [targets] = await pool.query(`
       SELECT tl.id, tl.name, tl.contact, tl.latitude, tl.longitude, ra.status, ra.met_person, ra.is_unassigned 
       FROM target_locations tl
@@ -248,6 +276,7 @@ app.get('/api/map-data/:repId', async (req, res) => {
     res.status(500).json({ message: 'Error fetching map data' });
   }
 });
+
 
 app.get('/api/reps/:id/history', async (req, res) => {
   try {
@@ -289,7 +318,7 @@ app.get('/api/reps/:id/history', async (req, res) => {
 });
 
 // ==========================================
-// NEW: APPROVALS APIs (Leaves, Expenses, Salary)
+// 🚀 APPROVALS APIs (Leaves, Expenses, Salary)
 // ==========================================
 
 app.get('/api/admin/leaves', async (req, res) => {
@@ -322,7 +351,12 @@ app.put('/api/admin/expenses/:id', async (req, res) => {
 
 app.get('/api/admin/salaries', async (req, res) => {
   try {
-    const [salaries] = await pool.query(`SELECT s.*, u.first_name, u.last_name, u.bank_account FROM salary_requests s JOIN users u ON s.rep_id = u.id ORDER BY s.requested_at DESC`);
+    // 👈 Salary එකේ Date format අවුල හදන්න DATE_FORMAT එක පාවිච්චි කළා
+    const [salaries] = await pool.query(`
+      SELECT s.id, s.amount, s.status, u.first_name, u.last_name, u.bank_account, 
+             DATE_FORMAT(s.requested_at, '%Y-%m-%d') as req_date
+      FROM salary_requests s JOIN users u ON s.rep_id = u.id ORDER BY s.requested_at DESC
+    `);
     res.json(salaries);
   } catch(e) { res.status(500).json({message: 'Error fetching salaries'}); }
 });
