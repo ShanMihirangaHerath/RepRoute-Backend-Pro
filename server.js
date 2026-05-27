@@ -430,6 +430,85 @@ app.put('/api/admin/salaries/:id', async (req, res) => {
   } catch(e) { res.status(500).json({message: 'Error updating salary'}); }
 });
 
+// 🚀 1. PDF Report Generation (Specific Rep)
+app.get('/api/admin/report/:repId', async (req, res) => {
+    try {
+        const [rows] = await pool.query(`
+            SELECT ra.assigned_date, tl.name as store, vl.status, vl.met_person, vl.notes 
+            FROM rep_assignments ra
+            JOIN target_locations tl ON ra.location_id = tl.id
+            LEFT JOIN visit_logs vl ON ra.id = vl.assignment_id
+            WHERE ra.rep_id = ?
+        `, [req.params.repId]);
+        res.json(rows);
+    } catch(e) { res.status(500).json({message: 'Report generation failed'}); }
+});
+
+// 🚀 2. Send Message to Reps (Group or Single)
+app.post('/api/admin/send-message', async (req, res) => {
+    const { repIds, message } = req.body; // repIds = [1, 2, 3] wage array ekk
+    try {
+        for (let id of repIds) {
+            await pool.query('INSERT INTO messages (rep_id, sender, message) VALUES (?, "admin", ?)', [id, message]);
+        }
+        res.json({message: 'Messages sent successfully'});
+    } catch(e) { res.status(500).json({message: 'Failed to send messages'}); }
+});
+
+app.get('/api/admin/messages/:repId', async (req, res) => {
+    try {
+        const [messages] = await pool.query('SELECT * FROM messages WHERE rep_id = ? ORDER BY created_at ASC', [req.params.repId]);
+        res.json(messages);
+    } catch(e) { res.status(500).json({message: 'Failed to fetch messages'}); }
+});
+
+// ==========================================
+// 🚀 FULL REPORT API (Excel Download Ge)
+// ==========================================
+app.get('/api/admin/full-report', async (req, res) => {
+  try {
+    const filterDate = req.query.date;
+    const repId = req.query.repId;
+
+    let query = `
+      SELECT 
+        vl.id as log_id,
+        vl.created_at as visit_date,
+        u.first_name, u.last_name,
+        tl.name as shop_name, tl.contact as shop_contact, tl.category,
+        vl.met_person, vl.contact_number as person_contact,
+        vl.status, vl.notes,
+        ra.is_unassigned, ra.assigned_date
+      FROM visit_logs vl
+      JOIN rep_assignments ra ON vl.assignment_id = ra.id
+      JOIN target_locations tl ON ra.location_id = tl.id
+      JOIN users u ON ra.rep_id = u.id
+      WHERE 1=1
+    `;
+    const params = [];
+
+    // Date filter
+    if (filterDate && filterDate !== 'all') {
+      query += ` AND DATE(vl.created_at) = ?`;
+      params.push(filterDate);
+    }
+    
+    // Rep filter
+    if (repId && repId !== 'all') {
+      query += ` AND ra.rep_id = ?`;
+      params.push(repId);
+    }
+
+    query += ` ORDER BY vl.created_at DESC`;
+
+    const [rows] = await pool.query(query, params);
+    res.status(200).json(rows);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: 'Error fetching report data' });
+  }
+});
+
 const PORT = 5000;
 app.listen(PORT, () => {
   console.log(`🚀 Backend Server is running on http://localhost:${PORT}`);
