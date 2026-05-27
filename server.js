@@ -201,27 +201,29 @@ app.put('/api/reps/:id', async (req, res) => {
 });
 
 // ==========================================
-// 🚀 DASHBOARD REAL STATS API 
+// 🚀 DASHBOARD REAL STATS API (CURDATE Fix)
 // ==========================================
 app.get('/api/dashboard-stats', async (req, res) => {
   try {
     const [reps] = await pool.query('SELECT COUNT(*) as count FROM users WHERE role="rep"');
     const [locations] = await pool.query('SELECT COUNT(*) as count FROM target_locations');
-    const [assignments] = await pool.query('SELECT COUNT(*) as count FROM rep_assignments WHERE assigned_date = CURDATE()');
-    const [completed] = await pool.query('SELECT COUNT(*) as count FROM rep_assignments WHERE assigned_date = CURDATE() AND status="Visited"');
     
-    // Reps ලාට Assign කරපු කඩවල් ගාණයි ගියපු ගාණයි (අද දවසට)
+    // සම්පූර්ණ අසයින් කරපු ගාණ (CURDATE අයින් කළා)
+    const [assignments] = await pool.query('SELECT COUNT(*) as count FROM rep_assignments');
+    const [completed] = await pool.query('SELECT COUNT(*) as count FROM rep_assignments WHERE status="Visited"');
+    
+    // Reps ලාගේ සම්පූර්ණ ප්‍රගතිය (CURDATE අයින් කළා)
     const [repStats] = await pool.query(`
       SELECT u.id, u.first_name, u.last_name, 
              COUNT(ra.id) as total_assigned,
              SUM(CASE WHEN ra.status = 'Visited' THEN 1 ELSE 0 END) as completed
       FROM users u
-      LEFT JOIN rep_assignments ra ON u.id = ra.rep_id AND ra.assigned_date = CURDATE()
+      LEFT JOIN rep_assignments ra ON u.id = ra.rep_id
       WHERE u.role = 'rep'
       GROUP BY u.id
     `);
 
-    // අන්තිම දවස් 7 Chart එකට
+    // අන්තිම දවස් 7 Chart එක
     const [chartData] = await pool.query(`
       SELECT DATE_FORMAT(assigned_date, '%a') as name, COUNT(*) as visited 
       FROM rep_assignments 
@@ -243,26 +245,27 @@ app.get('/api/dashboard-stats', async (req, res) => {
 });
 
 // ==========================================
-// 🚀 LIVE MAP & TRACKING API (FIXED)
+// 🚀 LIVE MAP & TRACKING API (CURDATE Fix & Latest Status)
 // ==========================================
 app.get('/api/map-data/:repId', async (req, res) => {
   try {
-    const repId = req.params.repId; // 👈 මේක කලින් id කියලා තිබිලා තමයි අවුල් ගියේ
+    const repId = req.params.repId; 
     const today = new Date().toISOString().split('T')[0];
 
-    // All Reps තේරුවොත් ලංකාවේ තියෙන ඔක්කොම කඩවල් යවනවා
+    // All Reps
     if (repId === 'all') {
       const [allTargets] = await pool.query('SELECT id, name, contact, latitude, longitude, category FROM target_locations WHERE latitude IS NOT NULL');
       return res.status(200).json({ targets: allTargets, route: [] });
     }
 
-    // නැත්නම් තෝරපු Rep ගේ විතරක් යවනවා
+    // 🚀 CURDATE අයින් කළා. කඩවල් ඔක්කොම පෙන්වනවා අන්තිම Status එකත් එක්ක!
     const [targets] = await pool.query(`
-      SELECT tl.id, tl.name, tl.contact, tl.latitude, tl.longitude, ra.status, ra.met_person, ra.is_unassigned 
+      SELECT tl.id, tl.name, tl.contact, tl.latitude, tl.longitude, ra.status, ra.is_unassigned,
+             (SELECT status FROM visit_logs WHERE assignment_id = ra.id ORDER BY created_at DESC LIMIT 1) as latest_status
       FROM target_locations tl
       JOIN rep_assignments ra ON tl.id = ra.location_id
-      WHERE ra.rep_id = ? AND ra.assigned_date = ?
-    `, [repId, today]);
+      WHERE ra.rep_id = ? AND tl.latitude IS NOT NULL
+    `, [repId]);
 
     const [tracking] = await pool.query(`
       SELECT latitude, longitude FROM rep_tracking 
@@ -277,13 +280,12 @@ app.get('/api/map-data/:repId', async (req, res) => {
   }
 });
 
-
 app.get('/api/reps/:id/history', async (req, res) => {
   try {
     const repId = req.params.id;
     const [history] = await pool.query(`
       SELECT ra.id as assignment_id, tl.name AS location_name, tl.latitude, tl.longitude, 
-             ra.assigned_date, ra.status as assignment_status, ra.is_unassigned,
+             DATE_FORMAT(ra.assigned_date, '%Y-%m-%d') as assigned_date, ra.status as assignment_status, ra.is_unassigned,
              vl.id as log_id, vl.met_person, vl.contact_number, vl.status as log_status, vl.notes, vl.created_at,
              vl.latitude as log_lat, vl.longitude as log_lng
       FROM rep_assignments ra
@@ -318,7 +320,7 @@ app.get('/api/reps/:id/history', async (req, res) => {
 });
 
 // ==========================================
-// 🚀 APPROVALS APIs (Leaves, Expenses, Salary)
+// APPROVALS APIs (Leaves, Expenses, Salary)
 // ==========================================
 
 app.get('/api/admin/leaves', async (req, res) => {
@@ -351,7 +353,6 @@ app.put('/api/admin/expenses/:id', async (req, res) => {
 
 app.get('/api/admin/salaries', async (req, res) => {
   try {
-    // 👈 Salary එකේ Date format අවුල හදන්න DATE_FORMAT එක පාවිච්චි කළා
     const [salaries] = await pool.query(`
       SELECT s.id, s.amount, s.status, u.first_name, u.last_name, u.bank_account, 
              DATE_FORMAT(s.requested_at, '%Y-%m-%d') as req_date
