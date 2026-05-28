@@ -606,6 +606,57 @@ app.post('/api/admin/setup', async (req, res) => {
   }
 });
 
+// ==========================================
+// 🚀 ADMIN SETTINGS APIs
+// ==========================================
+
+// 1. Get Admin Profile
+app.get('/api/admin/settings/profile', async (req, res) => {
+  try {
+    const [users] = await pool.query('SELECT first_name, last_name, email, address as company_name FROM users WHERE role="admin" LIMIT 1');
+    if (users.length > 0) res.json(users[0]);
+    else res.status(404).json({ message: "Admin not found" });
+  } catch (error) {
+    res.status(500).json({ message: "Server Error" });
+  }
+});
+
+// 2. Update Admin Profile
+app.put('/api/admin/settings/profile', async (req, res) => {
+  try {
+    const { first_name, last_name, email, company_name } = req.body;
+    await pool.query(
+      'UPDATE users SET first_name=?, last_name=?, email=?, address=? WHERE role="admin"', 
+      [first_name, last_name, email, company_name]
+    );
+    res.json({ message: "Profile updated successfully!" });
+  } catch (error) {
+    res.status(500).json({ message: "Server Error" });
+  }
+});
+
+// 3. Update Admin Password
+app.put('/api/admin/settings/password', async (req, res) => {
+  try {
+    const { current_password, new_password } = req.body;
+    const [users] = await pool.query('SELECT password FROM users WHERE role="admin" LIMIT 1');
+    
+    if (users.length === 0) return res.status(404).json({ message: "Admin not found" });
+
+    // පරණ Password එක හරිද බලනවා
+    const validPassword = await bcrypt.compare(current_password, users[0].password);
+    if (!validPassword) return res.status(401).json({ message: "Incorrect current password!" });
+
+    // අලුත් Password එක Hash කරලා සේව් කරනවා
+    const hashedPassword = await bcrypt.hash(new_password, 10);
+    await pool.query('UPDATE users SET password=? WHERE role="admin"', [hashedPassword]);
+    
+    res.json({ message: "Password updated successfully!" });
+  } catch (error) {
+    res.status(500).json({ message: "Server Error" });
+  }
+});
+
 const PORT = 5000;
 app.listen(PORT, () => {
   console.log(`🚀 Backend Server is running on http://localhost:${PORT}`);
