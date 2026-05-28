@@ -562,6 +562,50 @@ app.post('/api/admin/update-salary-balance', async (req, res) => {
   } catch(e) { res.status(500).json({message: 'Error updating balance'}); }
 });
 
+// ==========================================
+// 🚀 ADMIN LOGIN & AUTHENTICATION APIs
+// ==========================================
+
+// Login API
+app.post('/api/admin/login', async (req, res) => {
+  const { username, password } = req.body;
+  try {
+    const [users] = await pool.query('SELECT * FROM users WHERE username = ? AND role = "admin"', [username]);
+    if (users.length === 0) return res.status(401).json({ message: 'Invalid username or not an admin!' });
+
+    // 🚀 Check Password (bcrypt)
+    const validPassword = await bcrypt.compare(password, users[0].password);
+    if (!validPassword) return res.status(401).json({ message: 'Incorrect password!' });
+
+    res.status(200).json({ message: 'Login successful', admin: { id: users[0].id, name: users[0].first_name } });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: 'Server error during login' });
+  }
+});
+
+// 🚀 Default Admin කෙනෙක් හදාගන්න Quick Setup API (එක පාරක් රන් කරන්න)
+app.post('/api/admin/setup', async (req, res) => {
+  try {
+    const saltRounds = 10;
+    const hashedPassword = await bcrypt.hash('admin123', saltRounds);
+    
+    // Database එකේ admin කෙනෙක් නැත්තම් විතරක් හදනවා
+    const [existing] = await pool.query('SELECT id FROM users WHERE username = "admin"');
+    if (existing.length === 0) {
+      await pool.query(
+        'INSERT INTO users (first_name, last_name, username, password, role) VALUES (?, ?, ?, ?, ?)',
+        ['Super', 'Admin', 'admin', hashedPassword, 'admin']
+      );
+      res.json({ message: 'Admin created successfully! Username: admin, Password: admin123' });
+    } else {
+      res.json({ message: 'Admin already exists!' });
+    }
+  } catch (error) {
+    res.status(500).json({ message: 'Setup failed' });
+  }
+});
+
 const PORT = 5000;
 app.listen(PORT, () => {
   console.log(`🚀 Backend Server is running on http://localhost:${PORT}`);
