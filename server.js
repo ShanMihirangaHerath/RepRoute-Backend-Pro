@@ -95,14 +95,16 @@ app.post('/api/preview-locations', upload.single('document'), async (req, res) =
   }
 });
 
+// 🚀 UPDATE: Confirm Locations API (Added Category Support)
 app.post('/api/confirm-locations', async (req, res) => {
   try {
-    const { repId, locations } = req.body;
+    const { repId, locations, category } = req.body; // 👈 අලුතින් category එක ගත්තා
     
     if (!repId || !locations || locations.length === 0) {
       return res.status(400).json({ message: 'Invalid data provided for saving.' });
     }
 
+    const locCategory = category || 'Pharmacy'; // 👈 මුකුත් නැත්තම් Pharmacy කියලා වැටෙනවා
     let savedCount = 0;
     const today = new Date().toISOString().split('T')[0];
 
@@ -115,9 +117,10 @@ app.post('/api/confirm-locations', async (req, res) => {
           if (existingRows.length > 0) {
             locationId = existingRows[0].id;
           } else {
+            // 👈 අලුතින් Category එක Database එකට සේව් කරනවා
             const [insertResult] = await pool.query(
-              'INSERT INTO target_locations (name, contact, latitude, longitude) VALUES (?, ?, ?, ?)',
-              [loc.Name, loc.Contact, loc.latitude, loc.longitude]
+              'INSERT INTO target_locations (name, contact, latitude, longitude, category) VALUES (?, ?, ?, ?, ?)',
+              [loc.Name, loc.Contact, loc.latitude, loc.longitude, locCategory]
             );
             locationId = insertResult.insertId;
           }
@@ -145,6 +148,7 @@ app.post('/api/confirm-locations', async (req, res) => {
     res.status(500).json({ message: 'Error saving locations to database.' });
   }
 });
+
 
 app.get('/api/reps', async (req, res) => {
   try {
@@ -516,6 +520,46 @@ app.get('/api/admin/full-report', async (req, res) => {
     console.error(error);
     res.status(500).json({ message: 'Error fetching report data' });
   }
+});
+
+// ==========================================
+// 🚀 SALARY MANAGEMENT APIs (Admin Side)
+// ==========================================
+app.get('/api/admin/salary-balances', async (req, res) => {
+  try {
+      const [reps] = await pool.query('SELECT id, first_name, last_name, available_salary, advance_taken, penalty_amount FROM users WHERE role="rep"');
+      res.json(reps);
+  } catch(e) { res.status(500).json({message: 'Error fetching balances'}); }
+});
+
+app.post('/api/admin/update-salary-balance', async (req, res) => {
+  const { rep_id, added_amount } = req.body;
+  try {
+      const [users] = await pool.query('SELECT available_salary, advance_taken, penalty_amount FROM users WHERE id = ?', [rep_id]);
+      const user = users[0];
+      
+      let advance = parseFloat(user.advance_taken || 0);
+      let penalty = parseFloat(user.penalty_amount || 0);
+      let available = parseFloat(user.available_salary || 0);
+      let addAmount = parseFloat(added_amount);
+
+      let total_deduction = advance + penalty;
+
+      // 🚀 කලින් ගත්ත Advance සහ 10% Penalty එක මේ මාසේ පඩියෙන් කැපෙනවා!
+      if (addAmount >= total_deduction) {
+          let net_add = addAmount - total_deduction;
+          available += net_add;
+          advance = 0;
+          penalty = 0;
+      } else {
+          let remaining = total_deduction - addAmount;
+          advance = remaining;
+          penalty = 0;
+      }
+
+      await pool.query('UPDATE users SET available_salary=?, advance_taken=?, penalty_amount=? WHERE id=?', [available, advance, penalty, rep_id]);
+      res.json({message: "Salary updated and deductions applied automatically!"});
+  } catch(e) { res.status(500).json({message: 'Error updating balance'}); }
 });
 
 const PORT = 5000;
