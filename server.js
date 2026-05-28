@@ -463,12 +463,11 @@ app.get('/api/admin/messages/:repId', async (req, res) => {
 });
 
 // ==========================================
-// 🚀 FULL REPORT API (Excel Download Ge)
+// 🚀 ADVANCED FULL REPORT API
 // ==========================================
 app.get('/api/admin/full-report', async (req, res) => {
   try {
-    const filterDate = req.query.date;
-    const repId = req.query.repId;
+    const { startDate, endDate, repId, status } = req.query;
 
     let query = `
       SELECT 
@@ -478,7 +477,7 @@ app.get('/api/admin/full-report', async (req, res) => {
         tl.name as shop_name, tl.contact as shop_contact, tl.category,
         vl.met_person, vl.contact_number as person_contact,
         vl.status, vl.notes,
-        ra.is_unassigned, ra.assigned_date
+        ra.is_unassigned, DATE_FORMAT(ra.assigned_date, '%Y-%m-%d') as assigned_date
       FROM visit_logs vl
       JOIN rep_assignments ra ON vl.assignment_id = ra.id
       JOIN target_locations tl ON ra.location_id = tl.id
@@ -487,16 +486,26 @@ app.get('/api/admin/full-report', async (req, res) => {
     `;
     const params = [];
 
-    // Date filter
-    if (filterDate && filterDate !== 'all') {
-      query += ` AND DATE(vl.created_at) = ?`;
-      params.push(filterDate);
+    // 1. Date Range Filter
+    if (startDate && startDate !== 'all') {
+      query += ` AND DATE(vl.created_at) >= ?`;
+      params.push(startDate);
+    }
+    if (endDate && endDate !== 'all') {
+      query += ` AND DATE(vl.created_at) <= ?`;
+      params.push(endDate);
     }
     
-    // Rep filter
+    // 2. Rep Filter
     if (repId && repId !== 'all') {
       query += ` AND ra.rep_id = ?`;
       params.push(repId);
+    }
+
+    // 3. Status Filter
+    if (status && status !== 'all') {
+      query += ` AND vl.status = ?`;
+      params.push(status);
     }
 
     query += ` ORDER BY vl.created_at DESC`;
