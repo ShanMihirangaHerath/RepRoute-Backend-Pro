@@ -149,7 +149,8 @@ def get_profile_data(rep_id: int):
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
     try:
-        cursor.execute("SELECT first_name, last_name, email, mobile_number, bank_account FROM users WHERE id = %s", (rep_id,))
+        # මෙතන අලුත් Columns ටිකත් ගත්තා App එකට පෙන්වන්න
+        cursor.execute("SELECT first_name, last_name, email, mobile_number, bank_account, available_salary, advance_taken, penalty_amount FROM users WHERE id = %s", (rep_id,))
         user = cursor.fetchone()
 
         cursor.execute("""
@@ -164,13 +165,13 @@ def get_profile_data(rep_id: int):
             SELECT tl.name as store_name, vl.met_person, vl.contact_number, vl.status, vl.notes, vl.created_at
             FROM visit_logs vl JOIN rep_assignments ra ON vl.assignment_id = ra.id
             JOIN target_locations tl ON ra.location_id = tl.id
-            WHERE ra.rep_id = %s AND ra.assigned_date = CURDATE() ORDER BY vl.created_at DESC
+            WHERE ra.rep_id = %s ORDER BY vl.created_at DESC LIMIT 15
         """, (rep_id,))
         logs = cursor.fetchall()
         
         positive_count = sum(1 for log in logs if log['status'] == 'Positive')
         revisit_count = sum(1 for log in logs if log['status'] == 'Needs Revisit')
-        not_found_count = sum(1 for log in logs if log['status'] == 'Shop Not Found') # 🚀 අලුත්
+        not_found_count = sum(1 for log in logs if log['status'] == 'Shop Not Found')
 
         cursor.execute("SELECT id FROM daily_reports WHERE rep_id = %s AND report_date = CURDATE()", (rep_id,))
         is_report_sent = cursor.fetchone() is not None
@@ -192,7 +193,6 @@ def get_profile_data(rep_id: int):
         }
     finally: conn.close()
 
-
 @app.post("/update-bank")
 def update_bank(req: BankUpdate):
     conn = get_db_connection(); cursor = conn.cursor()
@@ -204,13 +204,41 @@ def update_bank(req: BankUpdate):
 
 @app.post("/request-salary")
 def request_salary(req: SalaryReq):
-    conn = get_db_connection(); cursor = conn.cursor()
+    conn = get_db_connection(); cursor = conn.cursor(dictionary=True)
     try:
-        cursor.execute("INSERT INTO salary_requests (rep_id, amount, status) VALUES (%s, %s, 'Pending')", (req.rep_id, req.amount))
+        cursor.execute("SELECT available_salary, advance_taken, penalty_amount FROM users WHERE id = %s", (req.rep_id,))
+        user = cursor.fetchone()
+        
+        available = float(user['available_salary'] or 0)
+        requested = float(req.amount)
+        
+        is_advance = 0
+        penalty_applied = 0
+        advance_amount = 0
+        
+        # 🚀 තියෙන ගානට වඩා ඉල්ලුවොත් 10% penalty එක වදිනවා!
+        if requested > available:
+            is_advance = 1
+            advance_amount = requested - available
+            penalty_applied = advance_amount * 0.10 # 10% Interest
+            
+            cursor.execute(
+                "UPDATE users SET available_salary = 0, advance_taken = advance_taken + %s, penalty_amount = penalty_amount + %s WHERE id = %s", 
+                (advance_amount, penalty_applied, req.rep_id)
+            )
+        else:
+            # සාමාන්‍ය විදිහට ඉල්ලුවොත් ගාණ විතරක් කැපෙනවා
+            cursor.execute("UPDATE users SET available_salary = available_salary - %s WHERE id = %s", (requested, req.rep_id))
+            
+        cursor.execute(
+            "INSERT INTO salary_requests (rep_id, amount, status, is_advance, penalty_applied) VALUES (%s, %s, 'Pending', %s, %s)", 
+            (req.rep_id, requested, is_advance, penalty_applied)
+        )
         conn.commit()
         return {"message": "Salary requested successfully!"}
-    finally: conn.close()
-
+    finally:
+        conn.close()
+        
 @app.post("/submit-report")
 def submit_report(req: ReportSubmit):
     conn = get_db_connection(); cursor = conn.cursor(dictionary=True)
