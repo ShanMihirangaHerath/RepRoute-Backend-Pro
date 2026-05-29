@@ -31,7 +31,15 @@ class TaskUpdate(BaseModel):
     longitude: Optional[float] = None
 
 class UnplannedVisit(BaseModel):
-    rep_id: int; name: str; contact: str; category: str; latitude: float; longitude: float; met_person: str; person_contact: str; status: str; visit_notes: str
+    rep_id: int
+    name: str
+    contact: str
+    category: str
+    latitude: float
+    longitude: float
+    met_person: str
+    visit_notes: str
+
 
 class BankUpdate(BaseModel): rep_id: int; bank_account: str
 class SalaryReq(BaseModel): rep_id: int; amount: float
@@ -127,21 +135,40 @@ def update_task(req: TaskUpdate):
         conn.close()
 
 
+
+#  Update the Route (App එකෙන් එන Data ටික හරියට DB එකට දානවා)
 @app.post("/add-unplanned-visit")
 def add_unplanned_visit(req: UnplannedVisit):
-    conn = get_db_connection(); cursor = conn.cursor()
+    conn = get_db_connection()
+    cursor = conn.cursor()
     try:
-        cursor.execute("INSERT INTO target_locations (name, contact, latitude, longitude, category) VALUES (%s, %s, %s, %s, %s)",
-                       (req.name, req.contact, req.latitude, req.longitude, req.category))
+        # 1. Target Locations එකට අලුත් කඩේ දානවා
+        cursor.execute(
+            "INSERT INTO target_locations (name, contact, latitude, longitude, category) VALUES (%s, %s, %s, %s, %s)",
+            (req.name, req.contact, req.latitude, req.longitude, req.category)
+        )
         new_loc_id = cursor.lastrowid
-        cursor.execute("INSERT INTO rep_assignments (rep_id, location_id, assigned_date, status, is_unassigned) VALUES (%s, %s, CURDATE(), 'Visited', 1)",
-                       (req.rep_id, new_loc_id))
+
+        # 2. Rep Assignments එකට අලුත් Assignment එක දානවා (is_unassigned = 1)
+        cursor.execute(
+            "INSERT INTO rep_assignments (rep_id, location_id, assigned_date, status, is_unassigned) VALUES (%s, %s, CURDATE(), 'Visited', 1)",
+            (req.rep_id, new_loc_id)
+        )
         new_assign_id = cursor.lastrowid
-        cursor.execute("INSERT INTO visit_logs (assignment_id, met_person, contact_number, status, notes) VALUES (%s, %s, %s, %s, %s)",
-                       (new_assign_id, req.met_person, req.person_contact, req.status, req.visit_notes))
+
+        # 3. Visit Logs එකට ලොග් එක දානවා (Status එක ඔටෝ 'Positive' වැටෙනවා, GPS Location එකත් සේව් වෙනවා)
+        cursor.execute(
+            "INSERT INTO visit_logs (assignment_id, met_person, contact_number, status, notes, latitude, longitude) VALUES (%s, %s, %s, %s, %s, %s, %s)",
+            (new_assign_id, req.met_person, req.contact, 'Positive', req.visit_notes, req.latitude, req.longitude)
+        )
+        
         conn.commit()
-        return {"message": "Visit added!"}
-    finally: conn.close()
+        return {"message": "Visit added successfully!"}
+    except Exception as e:
+        print(f"Error adding visit: {e}")
+        raise HTTPException(status_code=500, detail="Database Error")
+    finally: 
+        conn.close()
 
 # 🚀 1. Profile Data API (DUPLICATE එක අයින් කරලා හරියටම හැදුවා)
 @app.get("/profile-data/{rep_id}")
