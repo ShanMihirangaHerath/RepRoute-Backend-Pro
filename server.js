@@ -95,15 +95,16 @@ app.post('/api/preview-locations', upload.single('document'), async (req, res) =
   }
 });
 
+// 🚀 UPDATE: Confirm Locations API (Added Category Support)
 app.post('/api/confirm-locations', async (req, res) => {
   try {
-    const { repId, locations, category } = req.body;
+    const { repId, locations, category } = req.body; // 👈 අලුතින් category එක ගත්තා
     
     if (!repId || !locations || locations.length === 0) {
       return res.status(400).json({ message: 'Invalid data provided for saving.' });
     }
 
-    const locCategory = category || 'Pharmacy';
+    const locCategory = category || 'Pharmacy'; // 👈 මුකුත් නැත්තම් Pharmacy කියලා වැටෙනවා
     let savedCount = 0;
     const today = new Date().toISOString().split('T')[0];
 
@@ -116,6 +117,7 @@ app.post('/api/confirm-locations', async (req, res) => {
           if (existingRows.length > 0) {
             locationId = existingRows[0].id;
           } else {
+            // 👈 අලුතින් Category එක Database එකට සේව් කරනවා
             const [insertResult] = await pool.query(
               'INSERT INTO target_locations (name, contact, latitude, longitude, category) VALUES (?, ?, ?, ?, ?)',
               [loc.Name, loc.Contact, loc.latitude, loc.longitude, locCategory]
@@ -146,6 +148,7 @@ app.post('/api/confirm-locations', async (req, res) => {
     res.status(500).json({ message: 'Error saving locations to database.' });
   }
 });
+
 
 app.get('/api/reps', async (req, res) => {
   try {
@@ -251,10 +254,14 @@ app.get('/api/dashboard-stats', async (req, res) => {
       chartData: chartData.length > 0 ? chartData : [{ name: 'No Data', visited: 0 }]
     });
   } catch (error) {
+    console.error(error);
     res.status(500).json({ message: 'Error fetching stats' });
   }
 });
 
+// ==========================================
+// 🚀 LIVE MAP & TRACKING API (FIXED ROUTE & LOCATIONS)
+// ==========================================
 app.get('/api/map-data/:repId', async (req, res) => {
   try {
     const repId = req.params.repId; 
@@ -266,6 +273,7 @@ app.get('/api/map-data/:repId', async (req, res) => {
       return res.status(200).json({ targets: allTargets, routes: [] });
     }
 
+    // 1. 📍 Locations (කඩවල්): දවසක් තේරුවත් නැතත් ඔක්කොම පෙන්වනවා
     const [targets] = await pool.query(`
       SELECT tl.id, tl.name, tl.contact, tl.latitude, tl.longitude, ra.status, ra.is_unassigned, DATE_FORMAT(ra.assigned_date, '%Y-%m-%d') as assigned_date,
              (SELECT status FROM visit_logs WHERE assignment_id = ra.id ORDER BY created_at DESC LIMIT 1) as latest_status
@@ -274,24 +282,53 @@ app.get('/api/map-data/:repId', async (req, res) => {
       WHERE ra.rep_id = ? AND tl.latitude IS NOT NULL
     `, [repId]);
 
+    // 2. 🟢 Route Data Grouping (දවස අනුව පාරවල් කඩලා ගන්නවා)
     let routes = [];
+
     if (filterDate && filterDate !== 'all') {
-      const [tracking] = await pool.query(`SELECT latitude, longitude FROM rep_tracking WHERE rep_id = ? AND DATE(tracked_at) = ? ORDER BY tracked_at ASC`, [repId, filterDate]);
-      if (tracking.length > 0) routes.push({ date: filterDate, isToday: filterDate === today, path: tracking.map(t => [Number(t.latitude), Number(t.longitude)]) });
+      // දවසක් තේරුවම ඒ දවසේ පාර විතරක් (කොළ පාටින් එයි)
+      const [tracking] = await pool.query(`
+        SELECT latitude, longitude FROM rep_tracking 
+        WHERE rep_id = ? AND DATE(tracked_at) = ? ORDER BY tracked_at ASC
+      `, [repId, filterDate]);
+      
+      if (tracking.length > 0) {
+        routes.push({
+          date: filterDate,
+          isToday: filterDate === today,
+          path: tracking.map(t => [Number(t.latitude), Number(t.longitude)])
+        });
+      }
     } else {
-      const [tracking] = await pool.query(`SELECT latitude, longitude, DATE(tracked_at) as t_date FROM rep_tracking WHERE rep_id = ? ORDER BY tracked_at ASC`, [repId]);
+      // All Time දැම්මම ඔක්කොම දවස් වල පාරවල් ගන්නවා (Group by Date)
+      const [tracking] = await pool.query(`
+        SELECT latitude, longitude, DATE(tracked_at) as t_date FROM rep_tracking 
+        WHERE rep_id = ? ORDER BY tracked_at ASC
+      `, [repId]);
+
+      // දවස් අනුව පාරවල් Array එකකට දානවා
       const groupedPaths = {};
       tracking.forEach(t => {
         if (!groupedPaths[t.t_date]) groupedPaths[t.t_date] = [];
         groupedPaths[t.t_date].push([Number(t.latitude), Number(t.longitude)]);
       });
+
       for (const [dateKey, path] of Object.entries(groupedPaths)) {
-        routes.push({ date: dateKey, isToday: dateKey === today, path: path });
+        routes.push({
+          date: dateKey,
+          isToday: dateKey === today, // අද දවස නම් true (කොළ පාට වෙන්න)
+          path: path
+        });
       }
     }
+
     res.status(200).json({ targets: targets, routes: routes });
-  } catch (error) { res.status(500).json({ message: 'Error fetching map data' }); }
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: 'Error fetching map data' });
+  }
 });
+
 
 app.get('/api/reps/:id/history', async (req, res) => {
   try {
@@ -337,12 +374,16 @@ app.get('/api/reps/:id/history', async (req, res) => {
       }
     }
     res.status(200).json(groupedHistory);
-  } catch (error) { res.status(500).json({ message: 'Error fetching representative history' }); }
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: 'Error fetching representative history' });
+  }
 });
 
 // ==========================================
-// APPROVALS APIs (Leaves, Expenses)
+// APPROVALS APIs (Leaves, Expenses, Salary)
 // ==========================================
+
 app.get('/api/admin/leaves', async (req, res) => {
   try {
     const [leaves] = await pool.query(`SELECT l.*, u.first_name, u.last_name FROM leave_requests l JOIN users u ON l.rep_id = u.id ORDER BY l.created_at DESC`);
@@ -371,61 +412,29 @@ app.put('/api/admin/expenses/:id', async (req, res) => {
   } catch(e) { res.status(500).json({message: 'Error updating expense'}); }
 });
 
-// ==========================================
-// 🚀 ROBUST SALARY APPROVAL & REJECTION API 
-// ==========================================
-// මේ Function එක RequestsApprovals එකටයි, SalaryManagement එකටයි දෙකටම පොදුයි. (Refund logic එක මෙතන තියෙනවා)
-const updateSalaryStatus = async (reqId, status, res) => {
-  try {
-      const [reqRow] = await pool.query('SELECT amount, status, rep_id, is_advance, penalty_applied FROM salary_requests WHERE id = ?', [reqId]);
-      if (reqRow.length === 0) return res.status(404).json({message: 'Request not found'});
-      
-      const r = reqRow[0];
-
-      // 🔴 REJECT කලොත් සල්ලි ටික Available Balance එකට Refund කරනවා
-      if (status === 'Rejected' && r.status === 'Pending') {
-          await pool.query(
-            'UPDATE users SET available_salary = available_salary + ? WHERE id = ?', 
-            [parseFloat(r.amount), r.rep_id]
-          );
-      }
-
-      // Update the request status
-      if (status === 'Paid') {
-          await pool.query('UPDATE salary_requests SET status = ?, paid_at = CURRENT_TIMESTAMP WHERE id = ?', [status, reqId]);
-      } else {
-          await pool.query('UPDATE salary_requests SET status = ? WHERE id = ?', [status, reqId]);
-      }
-      res.json({message: `Request marked as ${status}`});
-  } catch(e) { 
-      console.error(e);
-      res.status(500).json({message: 'Error updating salary request'}); 
-  }
-};
-
-app.put('/api/admin/salaries/:id', async (req, res) => {
-  await updateSalaryStatus(req.params.id, req.body.status, res);
-});
-
-app.put('/api/admin/salary-requests/:id', async (req, res) => {
-  await updateSalaryStatus(req.params.id, req.body.status, res);
-});
-
 app.get('/api/admin/salaries', async (req, res) => {
   try {
-    // 0.00 එන පරණ බග් රෙකෝඩ් අයින් කරලා තියෙන්නේ (amount > 0)
     const [salaries] = await pool.query(`
       SELECT s.id, s.amount, s.status, u.first_name, u.last_name, u.bank_account, 
              DATE_FORMAT(s.requested_at, '%Y-%m-%d') as req_date
-      FROM salary_requests s JOIN users u ON s.rep_id = u.id 
-      WHERE s.amount > 0
-      ORDER BY s.requested_at DESC
+      FROM salary_requests s JOIN users u ON s.rep_id = u.id ORDER BY s.requested_at DESC
     `);
     res.json(salaries);
   } catch(e) { res.status(500).json({message: 'Error fetching salaries'}); }
 });
 
+app.put('/api/admin/salaries/:id', async (req, res) => {
+  try {
+    if(req.body.status === 'Paid') {
+      await pool.query('UPDATE salary_requests SET status = ?, paid_at = CURRENT_TIMESTAMP WHERE id = ?', [req.body.status, req.params.id]);
+    } else {
+      await pool.query('UPDATE salary_requests SET status = ? WHERE id = ?', [req.body.status, req.params.id]);
+    }
+    res.json({message: 'Salary status updated'});
+  } catch(e) { res.status(500).json({message: 'Error updating salary'}); }
+});
 
+// 🚀 1. PDF Report Generation (Specific Rep)
 app.get('/api/admin/report/:repId', async (req, res) => {
     try {
         const [rows] = await pool.query(`
@@ -439,8 +448,9 @@ app.get('/api/admin/report/:repId', async (req, res) => {
     } catch(e) { res.status(500).json({message: 'Report generation failed'}); }
 });
 
+// 🚀 2. Send Message to Reps (Group or Single)
 app.post('/api/admin/send-message', async (req, res) => {
-    const { repIds, message } = req.body;
+    const { repIds, message } = req.body; // repIds = [1, 2, 3] wage array ekk
     try {
         for (let id of repIds) {
             await pool.query('INSERT INTO messages (rep_id, sender, message) VALUES (?, "admin", ?)', [id, message]);
@@ -456,43 +466,68 @@ app.get('/api/admin/messages/:repId', async (req, res) => {
     } catch(e) { res.status(500).json({message: 'Failed to fetch messages'}); }
 });
 
+// ==========================================
+// 🚀 ADVANCED FULL REPORT API
+// ==========================================
 app.get('/api/admin/full-report', async (req, res) => {
   try {
     const { startDate, endDate, repId, status } = req.query;
 
     let query = `
-      SELECT vl.id as log_id, vl.created_at as visit_date, u.first_name, u.last_name,
+      SELECT 
+        vl.id as log_id,
+        vl.created_at as visit_date,
+        u.first_name, u.last_name,
         tl.name as shop_name, tl.contact as shop_contact, tl.category,
-        vl.met_person, vl.contact_number as person_contact, vl.status, vl.notes,
+        vl.met_person, vl.contact_number as person_contact,
+        vl.status, vl.notes,
         ra.is_unassigned, DATE_FORMAT(ra.assigned_date, '%Y-%m-%d') as assigned_date
-      FROM visit_logs vl JOIN rep_assignments ra ON vl.assignment_id = ra.id
-      JOIN target_locations tl ON ra.location_id = tl.id JOIN users u ON ra.rep_id = u.id WHERE 1=1
+      FROM visit_logs vl
+      JOIN rep_assignments ra ON vl.assignment_id = ra.id
+      JOIN target_locations tl ON ra.location_id = tl.id
+      JOIN users u ON ra.rep_id = u.id
+      WHERE 1=1
     `;
     const params = [];
-    if (startDate && startDate !== 'all') { query += ` AND DATE(vl.created_at) >= ?`; params.push(startDate); }
-    if (endDate && endDate !== 'all') { query += ` AND DATE(vl.created_at) <= ?`; params.push(endDate); }
-    if (repId && repId !== 'all') { query += ` AND ra.rep_id = ?`; params.push(repId); }
-    if (status && status !== 'all') { query += ` AND vl.status = ?`; params.push(status); }
+
+    // 1. Date Range Filter
+    if (startDate && startDate !== 'all') {
+      query += ` AND DATE(vl.created_at) >= ?`;
+      params.push(startDate);
+    }
+    if (endDate && endDate !== 'all') {
+      query += ` AND DATE(vl.created_at) <= ?`;
+      params.push(endDate);
+    }
+    
+    // 2. Rep Filter
+    if (repId && repId !== 'all') {
+      query += ` AND ra.rep_id = ?`;
+      params.push(repId);
+    }
+
+    // 3. Status Filter
+    if (status && status !== 'all') {
+      query += ` AND vl.status = ?`;
+      params.push(status);
+    }
+
     query += ` ORDER BY vl.created_at DESC`;
+
     const [rows] = await pool.query(query, params);
     res.status(200).json(rows);
-  } catch (error) { res.status(500).json({ message: 'Error fetching report data' }); }
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: 'Error fetching report data' });
+  }
 });
 
 // ==========================================
-// 🚀 SALARY MANAGEMENT APIs 
+// 🚀 SALARY MANAGEMENT APIs (Admin Side)
 // ==========================================
 app.get('/api/admin/salary-balances', async (req, res) => {
   try {
-      // 🟢 COALESCE දාලා Null ආවොත් 0.00 විදියට ගන්නවා (NaN Error එක මෙතනින් හැදෙනවා)
-      const [reps] = await pool.query(`
-        SELECT id, first_name, last_name, 
-               COALESCE(base_salary, 0) as base_salary, 
-               COALESCE(available_salary, 0) as available_salary, 
-               COALESCE(advance_taken, 0) as advance_taken, 
-               COALESCE(penalty_amount, 0) as penalty_amount 
-        FROM users WHERE role="rep"
-      `);
+      const [reps] = await pool.query('SELECT id, first_name, last_name, base_salary, available_salary, advance_taken, penalty_amount FROM users WHERE role="rep"');
       res.json(reps);
   } catch(e) { res.status(500).json({message: 'Error fetching balances'}); }
 });
@@ -500,11 +535,11 @@ app.get('/api/admin/salary-balances', async (req, res) => {
 app.post('/api/admin/set-base-salary', async (req, res) => {
   const { rep_id, base_salary } = req.body;
   try {
-      const [users] = await pool.query('SELECT COALESCE(base_salary, 0) as base_salary FROM users WHERE id = ?', [rep_id]);
-      const currentBase = parseFloat(users[0].base_salary);
+      const [users] = await pool.query('SELECT base_salary FROM users WHERE id = ?', [rep_id]);
+      const currentBase = parseFloat(users[0].base_salary || 0);
 
       if (currentBase === 0) {
-          // පලවෙනි පාරට පඩිය දාද්දි Available එකටත් ඒ ගාණම යනවා
+          // මුල්ම පාරට පඩිය දානවා නම්, available එකටත් ඒ ගාණම දානවා
           await pool.query('UPDATE users SET base_salary=?, available_salary=? WHERE id=?', [base_salary, base_salary, rep_id]);
       } else {
           await pool.query('UPDATE users SET base_salary=? WHERE id=?', [base_salary, rep_id]);
@@ -513,60 +548,51 @@ app.post('/api/admin/set-base-salary', async (req, res) => {
   } catch(e) { res.status(500).json({message: 'Error updating base salary'}); }
 });
 
-// 🚀 MONTH END SETTLEMENT LOGIC (FIXED!)
 app.post('/api/admin/settle-month', async (req, res) => {
   const { rep_id } = req.body;
   try {
-      const [users] = await pool.query(`
-        SELECT COALESCE(base_salary, 0) as base_salary, 
-               COALESCE(available_salary, 0) as available_salary, 
-               COALESCE(advance_taken, 0) as advance_taken, 
-               COALESCE(penalty_amount, 0) as penalty_amount 
-        FROM users WHERE id = ?
-      `, [rep_id]);
-      
+      const [users] = await pool.query('SELECT base_salary, available_salary, advance_taken, penalty_amount FROM users WHERE id = ?', [rep_id]);
       const user = users[0];
-      let base = parseFloat(user.base_salary);
-      let available = parseFloat(user.available_salary); 
-      let advance = parseFloat(user.advance_taken);
-      let penalty = parseFloat(user.penalty_amount);
 
-      // 🟢 සල්ලි ගෙවන්න තියෙනවා නම් විතරක් Paid Record එකක් දානවා (0.00 records හැදෙන එක නවත්තන්න)
-      if (available > 0) {
-          await pool.query(
-              'INSERT INTO salary_requests (rep_id, amount, status, is_advance, penalty_applied, requested_at, paid_at) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)',
-              [rep_id, available, 'Paid', 0, 0] 
-          );
-      }
+      let base = parseFloat(user.base_salary || 0);
+      let available = parseFloat(user.available_salary || 0); // මේක තමයි අතට දෙන්න ඕන ඉතුරු ගාණ
+      let advance = parseFloat(user.advance_taken || 0);
+      let penalty = parseFloat(user.penalty_amount || 0);
 
-      // 🚀 ඊළඟ මාසෙට ගණන් හදනවා (Base එකෙන් පරණ ණය කපලා)
+      // 🚀 ඊළඟ මාසේ පඩිය කැල්කියුලේට් කිරීම (Base එකෙන් Advance + Penalty අඩු කරනවා)
       let next_available = base - advance - penalty;
       let next_advance = 0;
       let next_penalty = 0;
 
       if (next_available < 0) {
-          // පඩියටත් වඩා ණය නම්, ඒක ඊළඟ මාසෙට ණය (Advance) විදියටම රෝල් වෙනවා
+          // පඩියටත් වඩා ණය නම්, ඒක ඊළඟ මාසෙටත් රෝල් වෙනවා
           next_advance = Math.abs(next_available);
           next_available = 0;
       }
 
-      // Database එක අලුත් මාසෙට Update කරනවා
       await pool.query(
           'UPDATE users SET available_salary=?, advance_taken=?, penalty_amount=? WHERE id=?',
           [next_available, next_advance, next_penalty, rep_id]
       );
 
+      // Settle කරපු ගාණ Record එකක් විදිහට දානවා
+      if (available > 0) {
+          await pool.query(
+              'INSERT INTO salary_requests (rep_id, amount, status, is_advance, penalty_applied) VALUES (?, ?, ?, ?, ?)',
+              [rep_id, available, 'Paid', 0, 0] 
+          );
+      }
+
       res.json({ message: 'Month settled successfully!', netPayable: available });
   } catch(e) { res.status(500).json({message: 'Error settling month'}); }
 });
 
+// 4. Advanced Salary Reports API
 app.get('/api/admin/salary-reports', async (req, res) => {
   const { startDate, endDate, repId } = req.query;
-  // 0.00 records අයින් කරලා තියෙන්නේ (amount > 0)
   let query = `
       SELECT s.id, s.amount, s.status, s.is_advance, s.penalty_applied, s.requested_at, u.first_name, u.last_name
-      FROM salary_requests s JOIN users u ON s.rep_id = u.id 
-      WHERE s.amount > 0
+      FROM salary_requests s JOIN users u ON s.rep_id = u.id WHERE 1=1
   `;
   const params = [];
   
@@ -582,31 +608,146 @@ app.get('/api/admin/salary-reports', async (req, res) => {
   } catch (e) { res.status(500).json({ message: 'Error fetching reports' }); }
 });
 
-// Admin Login & Setup...
+// Update Request Status (Approve/Reject)
+app.put('/api/admin/salary-requests/:id', async (req, res) => {
+  try {
+      const { status } = req.body;
+      const reqId = req.params.id;
+      if (status === 'Paid') {
+          await pool.query('UPDATE salary_requests SET status = ?, paid_at = CURRENT_TIMESTAMP WHERE id = ?', [status, reqId]);
+      } else {
+          await pool.query('UPDATE salary_requests SET status = ? WHERE id = ?', [status, reqId]);
+      }
+      res.json({message: 'Request updated!'});
+  } catch(e) { res.status(500).json({message: 'Error updating request'}); }
+});
+
+// app.post('/api/admin/update-salary-balance', async (req, res) => {
+//   const { rep_id, added_amount } = req.body;
+//   try {
+//       const [users] = await pool.query('SELECT available_salary, advance_taken, penalty_amount FROM users WHERE id = ?', [rep_id]);
+//       const user = users[0];
+      
+//       let advance = parseFloat(user.advance_taken || 0);
+//       let penalty = parseFloat(user.penalty_amount || 0);
+//       let available = parseFloat(user.available_salary || 0);
+//       let addAmount = parseFloat(added_amount);
+
+//       let total_deduction = advance + penalty;
+
+//       // 🚀 කලින් ගත්ත Advance සහ 10% Penalty එක මේ මාසේ පඩියෙන් කැපෙනවා!
+//       if (addAmount >= total_deduction) {
+//           let net_add = addAmount - total_deduction;
+//           available += net_add;
+//           advance = 0;
+//           penalty = 0;
+//       } else {
+//           let remaining = total_deduction - addAmount;
+//           advance = remaining;
+//           penalty = 0;
+//       }
+
+//       await pool.query('UPDATE users SET available_salary=?, advance_taken=?, penalty_amount=? WHERE id=?', [available, advance, penalty, rep_id]);
+//       res.json({message: "Salary updated and deductions applied automatically!"});
+//   } catch(e) { res.status(500).json({message: 'Error updating balance'}); }
+// });
+
+// ==========================================
+// 🚀 ADMIN LOGIN & AUTHENTICATION APIs
+// ==========================================
+
+// Login API
 app.post('/api/admin/login', async (req, res) => {
   const { username, password } = req.body;
   try {
     const [users] = await pool.query('SELECT * FROM users WHERE username = ? AND role = "admin"', [username]);
     if (users.length === 0) return res.status(401).json({ message: 'Invalid username or not an admin!' });
+
+    // 🚀 Check Password (bcrypt)
     const validPassword = await bcrypt.compare(password, users[0].password);
     if (!validPassword) return res.status(401).json({ message: 'Incorrect password!' });
+
     res.status(200).json({ message: 'Login successful', admin: { id: users[0].id, name: users[0].first_name } });
-  } catch (error) { res.status(500).json({ message: 'Server error during login' }); }
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: 'Server error during login' });
+  }
 });
 
+// 🚀 Default Admin කෙනෙක් හදාගන්න Quick Setup API (එක පාරක් රන් කරන්න)
 app.post('/api/admin/setup', async (req, res) => {
   try {
     const saltRounds = 10;
     const hashedPassword = await bcrypt.hash('admin123', saltRounds);
+    
+    // Database එකේ admin කෙනෙක් නැත්තම් විතරක් හදනවා
     const [existing] = await pool.query('SELECT id FROM users WHERE username = "admin"');
     if (existing.length === 0) {
-      await pool.query('INSERT INTO users (first_name, last_name, username, password, role) VALUES (?, ?, ?, ?, ?)', ['Super', 'Admin', 'admin', hashedPassword, 'admin']);
+      await pool.query(
+        'INSERT INTO users (first_name, last_name, username, password, role) VALUES (?, ?, ?, ?, ?)',
+        ['Super', 'Admin', 'admin', hashedPassword, 'admin']
+      );
       res.json({ message: 'Admin created successfully! Username: admin, Password: admin123' });
-    } else { res.json({ message: 'Admin already exists!' }); }
-  } catch (error) { res.status(500).json({ message: 'Setup failed' }); }
+    } else {
+      res.json({ message: 'Admin already exists!' });
+    }
+  } catch (error) {
+    res.status(500).json({ message: 'Setup failed' });
+  }
+});
+
+// ==========================================
+// 🚀 ADMIN SETTINGS APIs
+// ==========================================
+
+// 1. Get Admin Profile
+app.get('/api/admin/settings/profile', async (req, res) => {
+  try {
+    const [users] = await pool.query('SELECT first_name, last_name, email, address as company_name FROM users WHERE role="admin" LIMIT 1');
+    if (users.length > 0) res.json(users[0]);
+    else res.status(404).json({ message: "Admin not found" });
+  } catch (error) {
+    res.status(500).json({ message: "Server Error" });
+  }
+});
+
+// 2. Update Admin Profile
+app.put('/api/admin/settings/profile', async (req, res) => {
+  try {
+    const { first_name, last_name, email, company_name } = req.body;
+    await pool.query(
+      'UPDATE users SET first_name=?, last_name=?, email=?, address=? WHERE role="admin"', 
+      [first_name, last_name, email, company_name]
+    );
+    res.json({ message: "Profile updated successfully!" });
+  } catch (error) {
+    res.status(500).json({ message: "Server Error" });
+  }
+});
+
+// 3. Update Admin Password
+app.put('/api/admin/settings/password', async (req, res) => {
+  try {
+    const { current_password, new_password } = req.body;
+    const [users] = await pool.query('SELECT password FROM users WHERE role="admin" LIMIT 1');
+    
+    if (users.length === 0) return res.status(404).json({ message: "Admin not found" });
+
+    // පරණ Password එක හරිද බලනවා
+    const validPassword = await bcrypt.compare(current_password, users[0].password);
+    if (!validPassword) return res.status(401).json({ message: "Incorrect current password!" });
+
+    // අලුත් Password එක Hash කරලා සේව් කරනවා
+    const hashedPassword = await bcrypt.hash(new_password, 10);
+    await pool.query('UPDATE users SET password=? WHERE role="admin"', [hashedPassword]);
+    
+    res.json({ message: "Password updated successfully!" });
+  } catch (error) {
+    res.status(500).json({ message: "Server Error" });
+  }
 });
 
 const PORT = 5000;
 app.listen(PORT, () => {
   console.log(`🚀 Backend Server is running on http://localhost:${PORT}`);
-});
+}); 
