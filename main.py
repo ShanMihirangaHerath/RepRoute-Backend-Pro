@@ -290,14 +290,28 @@ def sync_activity(req: ActivitySync):
         return {"message": "Activity synced"}
     finally: conn.close()
 
+# 🚀 UPDATE: Decimals ටික හරියටම Float කරලා යවනවා
 @app.get("/activity-history/{rep_id}")
 def get_activity_history(rep_id: int, date: str):
-    conn = get_db_connection(); cursor = conn.cursor(dictionary=True)
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
     try:
         cursor.execute("SELECT steps, distance_km, calories FROM activity_history WHERE rep_id = %s AND record_date = %s", (rep_id, date))
         data = cursor.fetchone()
-        return data if data else {"steps": 0, "distance_km": 0.0, "calories": 0.0}
-    finally: conn.close()
+        
+        if data:
+            return {
+                "steps": int(data["steps"]),
+                "distance_km": float(data["distance_km"]),
+                "calories": float(data["calories"])
+            }
+        return {"steps": 0, "distance_km": 0.0, "calories": 0.0}
+    except Exception as e:
+        print(f"Error fetching history: {e}")
+        return {"steps": 0, "distance_km": 0.0, "calories": 0.0}
+    finally: 
+        conn.close()
+
 
 @app.post("/request-leave")
 def request_leave(req: LeaveRequest):

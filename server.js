@@ -262,6 +262,7 @@ app.get('/api/dashboard-stats', async (req, res) => {
 // ==========================================
 // 🚀 LIVE MAP & TRACKING API (FIXED ROUTE & LOCATIONS)
 // ==========================================
+// 🚀 UPDATE: Live Map API එකේ Revisit කරපු අයගේ විස්තරත් අදිනවා
 app.get('/api/map-data/:repId', async (req, res) => {
   try {
     const repId = req.params.repId; 
@@ -273,14 +274,18 @@ app.get('/api/map-data/:repId', async (req, res) => {
       return res.status(200).json({ targets: allTargets, routes: [] });
     }
 
-    // 1. 📍 Locations (කඩවල්): දවසක් තේරුවත් නැතත් ඔක්කොම පෙන්වනවා
+    // 1. 📍 Locations (කඩවල්): Revisit කරපු වාර ගාණත් (log_count) එක්ක ගන්නවා!
     const [targets] = await pool.query(`
       SELECT tl.id, tl.name, tl.contact, tl.latitude, tl.longitude, ra.status, ra.is_unassigned, DATE_FORMAT(ra.assigned_date, '%Y-%m-%d') as assigned_date,
-             (SELECT status FROM visit_logs WHERE assignment_id = ra.id ORDER BY created_at DESC LIMIT 1) as latest_status
+             (SELECT status FROM visit_logs WHERE assignment_id = ra.id ORDER BY created_at DESC LIMIT 1) as latest_status,
+             (SELECT GROUP_CONCAT(met_person SEPARATOR ', ') FROM visit_logs WHERE assignment_id = ra.id) as all_met_persons,
+             (SELECT COUNT(*) FROM visit_logs WHERE assignment_id = ra.id) as log_count
       FROM target_locations tl
       JOIN rep_assignments ra ON tl.id = ra.location_id
       WHERE ra.rep_id = ? AND tl.latitude IS NOT NULL
     `, [repId]);
+
+    // ... (මෙතනින් පල්ලෙහා Routes Grouping කෑල්ල කලින් විදිහටම තියන්න) ...
 
     // 2. 🟢 Route Data Grouping (දවස අනුව පාරවල් කඩලා ගන්නවා)
     let routes = [];
