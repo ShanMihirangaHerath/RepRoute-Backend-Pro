@@ -527,40 +527,130 @@ app.get('/api/admin/full-report', async (req, res) => {
 // ==========================================
 app.get('/api/admin/salary-balances', async (req, res) => {
   try {
-      const [reps] = await pool.query('SELECT id, first_name, last_name, available_salary, advance_taken, penalty_amount FROM users WHERE role="rep"');
+      const [reps] = await pool.query('SELECT id, first_name, last_name, base_salary, available_salary, advance_taken, penalty_amount FROM users WHERE role="rep"');
       res.json(reps);
   } catch(e) { res.status(500).json({message: 'Error fetching balances'}); }
 });
 
-app.post('/api/admin/update-salary-balance', async (req, res) => {
-  const { rep_id, added_amount } = req.body;
+app.post('/api/admin/set-base-salary', async (req, res) => {
+  const { rep_id, base_salary } = req.body;
   try {
-      const [users] = await pool.query('SELECT available_salary, advance_taken, penalty_amount FROM users WHERE id = ?', [rep_id]);
+      const [users] = await pool.query('SELECT base_salary FROM users WHERE id = ?', [rep_id]);
+      const currentBase = parseFloat(users[0].base_salary || 0);
+
+      if (currentBase === 0) {
+          // මුල්ම පාරට පඩිය දානවා නම්, available එකටත් ඒ ගාණම දානවා
+          await pool.query('UPDATE users SET base_salary=?, available_salary=? WHERE id=?', [base_salary, base_salary, rep_id]);
+      } else {
+          await pool.query('UPDATE users SET base_salary=? WHERE id=?', [base_salary, rep_id]);
+      }
+      res.json({ message: 'Base salary updated successfully!' });
+  } catch(e) { res.status(500).json({message: 'Error updating base salary'}); }
+});
+
+app.post('/api/admin/settle-month', async (req, res) => {
+  const { rep_id } = req.body;
+  try {
+      const [users] = await pool.query('SELECT base_salary, available_salary, advance_taken, penalty_amount FROM users WHERE id = ?', [rep_id]);
       const user = users[0];
-      
+
+      let base = parseFloat(user.base_salary || 0);
+      let available = parseFloat(user.available_salary || 0); // මේක තමයි අතට දෙන්න ඕන ඉතුරු ගාණ
       let advance = parseFloat(user.advance_taken || 0);
       let penalty = parseFloat(user.penalty_amount || 0);
-      let available = parseFloat(user.available_salary || 0);
-      let addAmount = parseFloat(added_amount);
 
-      let total_deduction = advance + penalty;
+      // 🚀 ඊළඟ මාසේ පඩිය කැල්කියුලේට් කිරීම (Base එකෙන් Advance + Penalty අඩු කරනවා)
+      let next_available = base - advance - penalty;
+      let next_advance = 0;
+      let next_penalty = 0;
 
-      // 🚀 කලින් ගත්ත Advance සහ 10% Penalty එක මේ මාසේ පඩියෙන් කැපෙනවා!
-      if (addAmount >= total_deduction) {
-          let net_add = addAmount - total_deduction;
-          available += net_add;
-          advance = 0;
-          penalty = 0;
-      } else {
-          let remaining = total_deduction - addAmount;
-          advance = remaining;
-          penalty = 0;
+      if (next_available < 0) {
+          // පඩියටත් වඩා ණය නම්, ඒක ඊළඟ මාසෙටත් රෝල් වෙනවා
+          next_advance = Math.abs(next_available);
+          next_available = 0;
       }
 
-      await pool.query('UPDATE users SET available_salary=?, advance_taken=?, penalty_amount=? WHERE id=?', [available, advance, penalty, rep_id]);
-      res.json({message: "Salary updated and deductions applied automatically!"});
-  } catch(e) { res.status(500).json({message: 'Error updating balance'}); }
+      await pool.query(
+          'UPDATE users SET available_salary=?, advance_taken=?, penalty_amount=? WHERE id=?',
+          [next_available, next_advance, next_penalty, rep_id]
+      );
+
+      // Settle කරපු ගාණ Record එකක් විදිහට දානවා
+      if (available > 0) {
+          await pool.query(
+              'INSERT INTO salary_requests (rep_id, amount, status, is_advance, penalty_applied) VALUES (?, ?, ?, ?, ?)',
+              [rep_id, available, 'Paid', 0, 0] 
+          );
+      }
+
+      res.json({ message: 'Month settled successfully!', netPayable: available });
+  } catch(e) { res.status(500).json({message: 'Error settling month'}); }
 });
+
+// 4. Advanced Salary Reports API
+app.get('/api/admin/salary-reports', async (req, res) => {
+  const { startDate, endDate, repId } = req.query;
+  let query = `
+      SELECT s.id, s.amount, s.status, s.is_advance, s.penalty_applied, s.requested_at, u.first_name, u.last_name
+      FROM salary_requests s JOIN users u ON s.rep_id = u.id WHERE 1=1
+  `;
+  const params = [];
+  
+  if (startDate && startDate !== 'all') { query += ` AND DATE(s.requested_at) >= ?`; params.push(startDate); }
+  if (endDate && endDate !== 'all') { query += ` AND DATE(s.requested_at) <= ?`; params.push(endDate); }
+  if (repId && repId !== 'all') { query += ` AND s.rep_id = ?`; params.push(repId); }
+  
+  query += ` ORDER BY s.requested_at DESC`;
+
+  try {
+      const [rows] = await pool.query(query, params);
+      res.json(rows);
+  } catch (e) { res.status(500).json({ message: 'Error fetching reports' }); }
+});
+
+// Update Request Status (Approve/Reject)
+app.put('/api/admin/salary-requests/:id', async (req, res) => {
+  try {
+      const { status } = req.body;
+      const reqId = req.params.id;
+      if (status === 'Paid') {
+          await pool.query('UPDATE salary_requests SET status = ?, paid_at = CURRENT_TIMESTAMP WHERE id = ?', [status, reqId]);
+      } else {
+          await pool.query('UPDATE salary_requests SET status = ? WHERE id = ?', [status, reqId]);
+      }
+      res.json({message: 'Request updated!'});
+  } catch(e) { res.status(500).json({message: 'Error updating request'}); }
+});
+
+// app.post('/api/admin/update-salary-balance', async (req, res) => {
+//   const { rep_id, added_amount } = req.body;
+//   try {
+//       const [users] = await pool.query('SELECT available_salary, advance_taken, penalty_amount FROM users WHERE id = ?', [rep_id]);
+//       const user = users[0];
+      
+//       let advance = parseFloat(user.advance_taken || 0);
+//       let penalty = parseFloat(user.penalty_amount || 0);
+//       let available = parseFloat(user.available_salary || 0);
+//       let addAmount = parseFloat(added_amount);
+
+//       let total_deduction = advance + penalty;
+
+//       // 🚀 කලින් ගත්ත Advance සහ 10% Penalty එක මේ මාසේ පඩියෙන් කැපෙනවා!
+//       if (addAmount >= total_deduction) {
+//           let net_add = addAmount - total_deduction;
+//           available += net_add;
+//           advance = 0;
+//           penalty = 0;
+//       } else {
+//           let remaining = total_deduction - addAmount;
+//           advance = remaining;
+//           penalty = 0;
+//       }
+
+//       await pool.query('UPDATE users SET available_salary=?, advance_taken=?, penalty_amount=? WHERE id=?', [available, advance, penalty, rep_id]);
+//       res.json({message: "Salary updated and deductions applied automatically!"});
+//   } catch(e) { res.status(500).json({message: 'Error updating balance'}); }
+// });
 
 // ==========================================
 // 🚀 ADMIN LOGIN & AUTHENTICATION APIs
